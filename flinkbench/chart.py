@@ -26,6 +26,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 
 plt.rcParams["font.sans-serif"] = ["PingFang SC", "Hiragino Sans GB", "Arial Unicode MS"]
 plt.rcParams["axes.unicode_minus"] = False
@@ -70,11 +71,13 @@ def render(con, out_path, title):
     n = len(panels)
     if n == 0:
         raise SystemExit("no panel data in the store — ingest a run first")
-    rows = (n + 1) // 2
-    fig, axes = plt.subplots(rows, 2, figsize=(13.2, 4.8 * rows))
-    axes = [axes] if rows == 1 else list(axes)
-    flat = [ax for row in axes for ax in row]
-    fig.suptitle(title, fontsize=15, fontweight="bold", y=0.985)
+    trend = _trend_series(con)
+    panel_rows = (n + 1) // 2
+    rows = panel_rows + (1 if trend else 0)
+    fig = plt.figure(figsize=(13.2, 4.8 * panel_rows + (3.6 if trend else 0)))
+    gs = GridSpec(rows, 2, figure=fig, hspace=0.62, wspace=0.26)
+    flat = [fig.add_subplot(gs[i // 2, i % 2]) for i in range(n)]
+    fig.suptitle(title, fontsize=15, fontweight="bold", y=0.99)
     w = 0.34
 
     for idx, (ax, panel) in enumerate(zip(flat, panels)):
@@ -128,7 +131,7 @@ def render(con, out_path, title):
             ax.set_yscale("log")
             _bar_labels(ax, [bar for container in ax.containers for bar in container], "{:.1f}")
             ax.annotate("端到端 %.2f 倍" % ratios[0], (0, l1[0] * 2.2), ha="center", fontsize=9, color=BLUE)
-            ax.annotate("%.2f 倍：计算耗时占比过高，传输收益被掩盖" % ratios[1],
+            ax.annotate("%.2f 倍：计算占比掩盖传输收益" % ratios[1],
                         (1, max(l1) * 2.0), ha="center", fontsize=8, color="#666666")
             ax.set_xticks(list(x), groups)
             ax.set_ylabel("每记录端到端耗时（纳秒，对数轴，越低越好）")
@@ -138,11 +141,10 @@ def render(con, out_path, title):
         elif panel == "memory":
             jvm = _latest(con, "memory_engine_rss", "flink_jvm")[0]
             native = _latest(con, "memory_engine_rss", "flinkable")[0]
-            ax.barh(["Apache Flink 原版\n（MiniCluster，JVM）", "flinkable\n（Rust 测试体）"],
-                    [jvm, native], color=[GRAY, BLUE])
+            ax.barh(["原版（JVM）", "flinkable"], [jvm, native], color=[GRAY, BLUE])
             ax.set_xlabel("引擎侧常驻内存 RSS 峰值（MB）")
             ax.annotate("−%.0f%%（微基准口径）" % (100.0 * (1 - native / jvm)),
-                        (native * 1.5, 1.45), fontsize=8, color=BLUE)
+                        (native * 1.8, 1), fontsize=8, color=BLUE)
             ax.set_title("④ 框架基础内存开销", fontsize=10)
             ax.invert_yaxis()
         elif panel == "throughput":
@@ -163,6 +165,8 @@ def render(con, out_path, title):
 
     for ax in flat[len(panels):]:
         ax.axis("off")
+    if trend:
+        _draw_trend(fig, gs, rows - 1, trend)
 
     fig.text(0.5, 0.005,
              "数据来源：本地结果库（benchctl.py 摄取）；口径见报告 §1。端到端作业对比尚未开展（见报告覆盖矩阵）。",
@@ -170,3 +174,68 @@ def render(con, out_path, title):
     fig.tight_layout(rect=[0, 0.02, 1, 0.96])
     fig.savefig(out_path, dpi=160)
     return out_path
+
+TREND_SERIES = [
+    ("serde_string", "flinkable", "字符串 flinkable", BLUE, "o"),
+    ("serde_string", "flink_jvm", "字符串 原版（JVM）", GRAY, "s"),
+    ("serde_int_long", "flinkable", "定长字段 flinkable", "#2e9e57", "^"),
+]
+
+
+def _trend_series(con):
+    """Codespeed-style history: run labels plus one series per tracked metric.
+
+    A trend exists once any tracked series carries two or more ingested runs —
+    the methodology's core artifact is the value-over-runs line, not the bar.
+    """
+    runs = con.execute(
+        "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id"
+    ).fetchall()
+    if not runs:
+        return None
+    series = []
+    for case, metric, label, color, marker in TREND_SERIES:
+        values = {}
+        for rid, _src in runs:
+            row = con.execute(
+                "SELECT value FROM metrics WHERE run_id = ? AND case_name = ? AND metric = ?",
+                (rid, case, metric),
+            ).fetchone()
+            if row:
+                values[rid] = row[0]
+        if len(values) >= 2:
+            series.append((label, color, marker, values))
+    if not series:
+        return None
+    return runs, series
+
+
+def _draw_trend(fig, gs, row, trend):
+    runs, series = trend
+    ax = fig.add_subplot(gs[row, :])
+    xs = list(range(len(runs)))
+    labels = [src for (_rid, src) in runs]
+    for label, color, marker, values in series:
+        ys = [values.get(rid) for rid, _src in runs]
+        pts = [(i, y) for i, (y, _r) in enumerate(zip(ys, runs)) if y is not None]
+        if not pts:
+            continue
+        px, py = zip(*pts)
+        ax.plot(px, py, marker=marker, color=color, label=label,
+                linewidth=1.6, markersize=5)
+        for i, y in zip(px, py):
+            ax.annotate("%.0f" % y, (i, y), textcoords="offset points",
+                        xytext=(0, 7), ha="center", fontsize=7.5, color=color)
+        first, last = py[0], py[-1]
+        if abs(last - first) / max(abs(first), 1e-9) > 0.15:
+            arrow = "改善 %.0f%%" % (100.0 * (1 - last / first)) if last < first else "恶化 %.0f%%" % (
+                100.0 * (last / first - 1))
+            ax.annotate(arrow, (px[-1] + 0.12, last), fontsize=8.5, color=color,
+                        fontweight="bold", va="center")
+    ax.set_yscale("log")
+    ax.set_xlim(xs[0] - 0.35, xs[-1] + 1.05)
+    ax.set_xticks(xs, labels, fontsize=8)
+    ax.set_ylabel("每记录耗时（纳秒，对数轴）")
+    ax.set_title("⑥ 时间线趋势与回归标记（官方方法论核心视图：同一指标随摄取次序的走势）", fontsize=10)
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(axis="y", which="both", alpha=0.25)

@@ -73,6 +73,28 @@ def generate(con, out_dir, title, env_lines):
             arrow = "越低越好" if direction == "lower_is_better" else "越高越好"
             lines.append("| %s | %s | %.4g %s | %s |" % (
                 case_label(case), metric_label(metric), value, unit_label(unit), arrow))
+    lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
+    trend_runs = con.execute(
+        "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()
+    trend_cases = []
+    for case in ("serde_string", "serde_int_long"):
+        if con.execute("SELECT count(DISTINCT run_id) FROM metrics WHERE case_name = ?",
+                       (case,)).fetchone()[0] >= 2:
+            trend_cases.append(case)
+    if trend_cases:
+        header = "| 指标 | 度量 | " + " | ".join(src for (_i, src) in trend_runs) + " |"
+        lines += [header, "| --- | --- | " + " | ".join("---" for _ in trend_runs) + " |"]
+        for case in trend_cases:
+            for metric in ("flinkable", "flink_jvm"):
+                cells = []
+                for rid, _src in trend_runs:
+                    row = con.execute(
+                        "SELECT value FROM metrics WHERE run_id = ? AND case_name = ? AND metric = ?",
+                        (rid, case, metric)).fetchone()
+                    cells.append("%.0f" % row[0] if row else "—")
+                if any(c != "—" for c in cells):
+                    lines.append("| %s | %s | %s |" % (
+                        case_label(case), metric_label(metric), " | ".join(cells)))
     lines += ["", "## 回归检查（基线窗口算法，移植自上游 regression_report_v2）", ""]
     lines += ["| 指标 | 度量 | 状态 |", "| --- | --- | --- |"]
     for case, metric, status, detail in regression.scan_store(con):
