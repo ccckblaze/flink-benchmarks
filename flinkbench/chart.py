@@ -209,7 +209,12 @@ def render(con, out_path, title):
                 ax.annotate("JM %.0f" % jm_jvm, (0, jm_jvm / 2), ha="center", fontsize=8, color="white")
                 ax.annotate("TM %.0f" % tm_jvm, (0, jm_jvm + tm_jvm / 2), ha="center", fontsize=8, color="white")
                 ax.annotate("JM %.0f" % jm_fab, (1, jm_fab / 2), ha="center", fontsize=8, color="white")
-                ax.annotate("TM %.1f" % tm_fab, (1, jm_fab + tm_fab + 42), ha="center", fontsize=8, color=BLUE)
+                # The Rust TM segment is a ~4 MB sliver: label it from the
+                # side with a leader so it never collides with the total.
+                ax.annotate("TM %.1f" % tm_fab, (1, jm_fab + tm_fab),
+                            xytext=(30, 16), textcoords="offset points",
+                            ha="left", fontsize=8, color=BLUE,
+                            arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
                 for x, tot in enumerate(totals):
                     ax.annotate("%.0f MB" % tot, (x, tot * 1.015), ha="center", fontsize=9)
                 ax.annotate("总占用 −%.0f%%" % (100.0 * (1 - totals[1] / totals[0])),
@@ -281,10 +286,14 @@ def render(con, out_path, title):
     return out_path
 
 TREND_SERIES = [
-    ("serde_string", "flinkable", "字符串 flinkable", BLUE, "o"),
-    ("serde_string", "flink_jvm", "字符串 原版（JVM）", GRAY, "s"),
-    ("serde_int_long", "flinkable", "定长字段 flinkable", "#2e9e57", "^"),
-    ("serde_string_full", "flinkable", "字符串全链条 flinkable", "#7a5cc4", "D"),
+    # Every flinkable series carries a same-colour original-Flink (JVM)
+    # reference line: dashed = reference (no point labels, no delta arrow).
+    ("serde_string", "flinkable", "字符串 flinkable", BLUE, "o", "-"),
+    ("serde_string", "flink_jvm", "字符串 原版（JVM）", GRAY, "s", "-"),
+    ("serde_int_long", "flinkable", "定长字段 flinkable", "#2e9e57", "^", "-"),
+    ("serde_int_long", "flink_jvm", "定长字段 原版（JVM）", "#2e9e57", "s", "--"),
+    ("serde_string_full", "flinkable", "字符串全链条 flinkable", "#7a5cc4", "D", "-"),
+    ("serde_string_full", "flink_jvm", "字符串全链条 原版（JVM）", "#7a5cc4", "s", "--"),
 ]
 
 
@@ -300,7 +309,7 @@ def _trend_series(con):
     if not runs:
         return None
     series = []
-    for case, metric, label, color, marker in TREND_SERIES:
+    for case, metric, label, color, marker, style in TREND_SERIES:
         values = {}
         for rid, _src in runs:
             row = con.execute(
@@ -310,7 +319,7 @@ def _trend_series(con):
             if row:
                 values[rid] = row[0]
         if len(values) >= 2:
-            series.append((label, color, marker, values))
+            series.append((label, color, marker, style, values))
     if not series:
         return None
     return runs, series
@@ -321,14 +330,16 @@ def _draw_trend(fig, gs, row, trend):
     ax = fig.add_subplot(gs[row, :])
     xs = list(range(len(runs)))
     labels = [src for (_rid, src) in runs]
-    for label, color, marker, values in series:
+    for label, color, marker, style, values in series:
         ys = [values.get(rid) for rid, _src in runs]
         pts = [(i, y) for i, (y, _r) in enumerate(zip(ys, runs)) if y is not None]
         if not pts:
             continue
         px, py = zip(*pts)
         ax.plot(px, py, marker=marker, color=color, label=label,
-                linewidth=1.6, markersize=5)
+                linewidth=1.6, markersize=5, linestyle=style)
+        if style == "--":
+            continue
         for i, y in zip(px, py):
             ax.annotate("%.0f" % y, (i, y), textcoords="offset points",
                         xytext=(0, 7), ha="center", fontsize=7.5, color=color)
@@ -344,6 +355,6 @@ def _draw_trend(fig, gs, row, trend):
     ax.set_ylabel("每记录耗时（纳秒，对数轴）")
     ax.set_title("⑦ 时间线趋势与回归标记（官方方法论核心视图：同一指标随摄取次序的走势）", fontsize=10)
     # Legend above the axes: the end-of-line 改善/恶化 markers own the right margin.
-    ax.legend(fontsize=8, loc="lower left", bbox_to_anchor=(0.0, 1.01, 1.0, 0.15),
+    ax.legend(fontsize=7.5, loc="lower left", bbox_to_anchor=(0.0, 1.01, 1.0, 0.22),
               mode="expand", ncol=3, framealpha=1.0)
     ax.grid(axis="y", which="both", alpha=0.25)

@@ -1,7 +1,7 @@
 # flinkable × Apache Flink 关键指标同屏对比（benchctl 生成）
 
-环境：bench rig（x86_64 4 核 Linux、数据盘、release 构建），锚栈 CPython 3.11.17 + pyarrow 14.0.2 + beam 2.54.0 + pemja 0.5.7，JDK 17；分布式内存用例为 Apache Flink 2.3.0 发行版 standalone 集群
-口径：微基准单机；柱形取各用例最近一次值；跨引擎倍数一律取自同一次运行内的并列腿；JVM 腿跨会话抖动 ±25%，不作为趋势判据
+环境：bench rig（x86_64 4 核 Linux、数据盘、release 构建），锚栈 CPython 3.11.17 + pyarrow 14.0.2 + beam 2.54.0 + pemja 0.5.7，JDK 17
+分布式内存用例：Apache Flink 2.3.0 发行版 standalone 集群（1 JM + 1 TM，默认配置）
 
 ![关键指标同屏对比](report.png)
 
