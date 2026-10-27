@@ -195,31 +195,87 @@ def render(con, out_path, title):
                 # TaskManager running WordCount over a 5.5 GB data-disk input, medians of
                 # twenty RSS samples per process. The Java JM is the same process on both
                 # sides (the control plane is kept), so the delta rides entirely on the TM.
+                # M132: the third bar is the ORIGINAL PyFlink deployment — the same
+                # Flink 2.3.0 cluster running the distribution's own word_count.py,
+                # where every slot adds a separate Python worker process on top of
+                # the Java TM (and the TM itself grows for the python bridge).
                 orange = "#e8a33d"
+                gold = "#c9a227"
                 jm_jvm = _latest(con, "memory_jm_rss", "flink_jvm")[0]
                 tm_jvm = _latest(con, "memory_tm_rss", "flink_jvm")[0]
                 jm_fab = _latest(con, "memory_jm_rss", "flinkable")[0]
                 tm_fab = _latest(con, "memory_tm_rss", "flinkable")[0]
-                cats = ["Apache Flink 原版", "flinkable"]
-                totals = [jm_jvm + tm_jvm, jm_fab + tm_fab]
-                ax.bar(cats, [jm_jvm, jm_fab], 0.5, color=orange,
-                       label="JobManager（Java，两侧同源）")
-                ax.bar(cats, [tm_jvm, tm_fab], 0.5, bottom=[jm_jvm, jm_fab],
-                       color=[GRAY, BLUE], label="TaskManager")
-                ax.annotate("JM %.0f" % jm_jvm, (0, jm_jvm / 2), ha="center", fontsize=8, color="white")
-                ax.annotate("TM %.0f" % tm_jvm, (0, jm_jvm + tm_jvm / 2), ha="center", fontsize=8, color="white")
-                ax.annotate("JM %.0f" % jm_fab, (1, jm_fab / 2), ha="center", fontsize=8, color="white")
-                # The Rust TM segment is a ~4 MB sliver: label it from the
-                # side with a leader so it never collides with the total.
-                ax.annotate("TM %.1f" % tm_fab, (1, jm_fab + tm_fab),
-                            xytext=(30, 16), textcoords="offset points",
-                            ha="left", fontsize=8, color=BLUE,
-                            arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
+                has_py = _has(con, "memory_py_rss")
+                has_fab_py = con.execute(
+                    "SELECT 1 FROM metrics WHERE case_name = 'memory_tm_rss' AND metric = 'flinkable_py' LIMIT 1"
+                ).fetchone() is not None
+                if has_fab_py:
+                    tm_fab_py = _latest(con, "memory_tm_rss", "flinkable_py")[0]
+                if has_py:
+                    jm_py = _latest(con, "memory_jm_rss", "flink_pyflink")[0]
+                    tm_py = _latest(con, "memory_tm_rss", "flink_pyflink")[0]
+                    py_py = _latest(con, "memory_py_rss", "flink_pyflink")[0]
+                    cats = ["Apache Flink 原版", "原版 PyFlink", "flinkable\n（Java 作业）",
+                            "flinkable\n（Python 作业）"] if has_fab_py else \
+                           ["Apache Flink 原版", "原版 PyFlink", "flinkable"]
+                    tops = [jm_jvm, jm_py, jm_fab] + ([jm_fab] if has_fab_py else [])
+                    mids = [tm_jvm, tm_py, tm_fab] + ([tm_fab_py] if has_fab_py else [])
+                    bots = [0.0, py_py, 0.0] + ([0.0] if has_fab_py else [])
+                    totals = [t + m + b for t, m, b in zip(tops, mids, bots)]
+                    ax.bar(cats, tops, 0.55, color=orange,
+                           label="JobManager（Java，三侧同源）")
+                    ax.bar(cats, mids, 0.55, bottom=tops, color=[GRAY, GRAY, BLUE],
+                           label="TaskManager（Java / Rust）")
+                    ax.bar(cats, bots, 0.55,
+                           bottom=[t + m for t, m in zip(tops, mids)],
+                           color=gold, label="Python worker（每槽位一进程）")
+                    for x, (t, m) in enumerate(zip(tops, mids)):
+                        ax.annotate("JM %.0f" % t, (x, t / 2), ha="center", fontsize=8, color="white")
+                        if x == 2:
+                            ax.annotate("TM %.1f" % m, (x, t + m),
+                                        xytext=(30, 16), textcoords="offset points",
+                                        ha="left", fontsize=8, color=BLUE,
+                                        arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
+                        elif x == 3:
+                            ax.annotate("TM %.0f" % m, (x, t + m / 2), ha="center", fontsize=8, color="white")
+                        else:
+                            ax.annotate("TM %.0f" % m, (x, t + m / 2), ha="center", fontsize=8, color="white")
+                    if has_py and bots[1] > 0:
+                        ax.annotate("PY %.0f" % bots[1], (1, tops[1] + mids[1] + bots[1] / 2),
+                                    ha="center", fontsize=8, color="white")
+                else:
+                    cats = ["Apache Flink 原版", "flinkable"]
+                    tops, mids = [jm_jvm, jm_fab], [tm_jvm, tm_fab]
+                    totals = [t + m for t, m in zip(tops, mids)]
+                    ax.bar(cats, tops, 0.5, color=orange,
+                           label="JobManager（Java，两侧同源）")
+                    ax.bar(cats, mids, 0.5, bottom=tops,
+                           color=[GRAY, BLUE], label="TaskManager")
+                    for x, (t, m) in enumerate(zip(tops, mids)):
+                        ax.annotate("JM %.0f" % t, (x, t / 2), ha="center", fontsize=8, color="white")
+                        if x == len(cats) - 1:
+                            ax.annotate("TM %.1f" % m, (x, t + m),
+                                        xytext=(30, 16), textcoords="offset points",
+                                        ha="left", fontsize=8, color=BLUE,
+                                        arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
+                        else:
+                            ax.annotate("TM %.0f" % m, (x, t + m / 2), ha="center", fontsize=8, color="white")
                 for x, tot in enumerate(totals):
                     ax.annotate("%.0f MB" % tot, (x, tot * 1.015), ha="center", fontsize=9)
-                ax.annotate("总占用 −%.0f%%" % (100.0 * (1 - totals[1] / totals[0])),
-                            (0.5, max(totals) * 1.1), ha="center", fontsize=9, color=BLUE,
-                            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
+                if has_py:
+                    lines = ["总占用",
+                             "Java 作业：较原版 −%.0f%%" % (100.0 * (1 - totals[2] / totals[0]))]
+                    if has_fab_py:
+                        lines.append("Python 作业：较 PyFlink −%.0f%%" % (100.0 * (1 - totals[3] / totals[1])))
+                    else:
+                        lines.append("较 PyFlink −%.0f%%" % (100.0 * (1 - totals[2] / totals[1])))
+                    ax.annotate("\n".join(lines), (2.62, max(totals) * 0.72),
+                        ha="center", va="center", fontsize=8.5, color=BLUE,
+                        bbox=dict(boxstyle="round,pad=0.24", fc="white", ec="none", alpha=0.9))
+                else:
+                    ax.annotate("总占用 −%.0f%%" % (100.0 * (1 - totals[1] / totals[0])),
+                                (0.5, max(totals) * 1.1), ha="center", fontsize=9, color=BLUE,
+                                bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
                 ax.set_ylabel("常驻内存 RSS（MB，越低越好）")
                 ax.set_title("④ 分布式部署内存（1 JM + 1 TM，WordCount 5.5 GB 运行中）", fontsize=9.5)
                 ax.legend(fontsize=7.5, loc="upper right")
@@ -254,7 +310,15 @@ def render(con, out_path, title):
                         bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
             ax.set_xticks([0], ["定长 4 列记录\n（每记录 32 字节）"])
             ax.set_ylabel("每记录往返耗时（纳秒，越低越好）")
-            ax.set_title("⑤ 列式帧编解码往返（Python 算子线格式：同一契约两引擎）", fontsize=9.5)
+            title5 = "⑤ 列式帧编解码往返（Python 算子线格式：同一契约两引擎）"
+            if _has(con, "serde_bulk4_count"):
+                # M132: the production pump never full-decodes — it only needs
+                # the row total, now counted from the message headers. The
+                # count lane rides in the title: the plot body stays collision-free.
+                cnt = _latest(con, "serde_bulk4_count", "flinkable")[0]
+                title5 = ("⑤ 列式帧编解码往返（同一契约两引擎）· 泵计数道 %.2f ns/记录" % cnt) + \
+                         "（全解码的 1/%.0f）" % (total / cnt)
+            ax.set_title(title5, fontsize=9.5)
             ax.legend(fontsize=7.5, loc="upper left")
             ax.set_ylim(0, max(total, py) * 1.3)
         elif panel == "throughput":
