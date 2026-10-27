@@ -68,6 +68,10 @@ def ingest_jmh_csv(con, run_id, text):
     return count
 
 
+def _case(name):
+    return name.replace("+", "_").replace(" ", "_").replace("-", "_")
+
+
 MEASURED_PATTERNS = [
     # fab-arrow data_plane_throughput.rs
     (r"MEASURED encode: .*-> ([\d.]+) MiB/s, ([\d.]+) ns/row",
@@ -114,9 +118,16 @@ MEASURED_PATTERNS = [
                 ("smallbatch_" + m[0], "transfer_ratio", m[3], "x", HB)]),
     # JVM comparison table (M125/M126) and legacy owned-form serde (P57)
     (r"P57-TABLE\|([^|]+)\|rust=([\d.]+)\|jvm=([\d.]+)\|jvm_over_rust=([\d.]+)x",
-     lambda m: [("serde_" + m[0].replace("+", "_").replace(" ", "_"), "flinkable", m[1], "ns/rec", LB),
-                ("serde_" + m[0].replace("+", "_").replace(" ", "_"), "flink_jvm", m[2], "ns/rec", LB),
-                ("serde_" + m[0].replace("+", "_").replace(" ", "_"), "flink_over_flinkable", m[3], "x", HB)]),
+     lambda m: [("serde_" + _case(m[0]), "flinkable", m[1], "ns/rec", LB),
+                ("serde_" + _case(m[0]), "flink_jvm", m[2], "ns/rec", LB),
+                ("serde_" + _case(m[0]), "flink_over_flinkable", m[3], "x", HB)]),
+    # M128 same-session before/after: the M126 shapes priced beside the M128 lanes.
+    (r"AB\|([^|]+)\|enc_old=([\d.]+)\|enc_new=([\d.]+)\|dec_old=([\d.]+)\|dec_new=([\d.]+)\|dec_cow=([\d.]+)",
+     lambda m: [("ab_encode_" + m[0], "flinkable_before", m[1], "ns/rec", LB),
+                ("ab_encode_" + m[0], "flinkable", m[2], "ns/rec", LB),
+                ("ab_decode_" + m[0], "flinkable_before", m[3], "ns/rec", LB),
+                ("ab_decode_" + m[0], "flinkable", m[4], "ns/rec", LB),
+                ("ab_decode_" + m[0], "flinkable_borrow", m[5], "ns/rec", LB)]),
     (r"P57-SERDE int\+long encode/decode=([\d.]+) ns/rec",
      lambda m: [("serde_owned_form_int_long", "flinkable", m[0], "ns/rec", LB)]),
     (r"P57-SERDE string encode/decode=([\d.]+) ns/rec",

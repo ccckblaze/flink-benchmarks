@@ -37,6 +37,23 @@ CASE_LABELS = {
     "network_accounting": "网络缓冲记账",
     "cross_task_hop_floor": "跨任务通道往返下限",
     "memory_engine_rss": "引擎侧常驻内存 RSS",
+    "serde_shape_cjk10": "序列化往返：中文 10 字（非 ASCII）",
+    "serde_shape_cjk40": "序列化往返：中文 40 字（非 ASCII）",
+    "serde_shape_mixed": "序列化往返：中英混排 + emoji",
+    "ab_encode_cjk_8": "编码通道：中文 10 字",
+    "ab_encode_cjk_64": "编码通道：中文 52 字",
+    "ab_encode_kana_16": "编码通道：日文 16 字",
+    "ab_encode_emoji_5": "编码通道：emoji",
+    "ab_encode_mixed_16": "编码通道：中英混排 + emoji",
+    "ab_encode_ascii_12": "编码通道：ASCII 12 字节",
+    "ab_encode_ascii_47": "编码通道：ASCII 47 字节",
+    "ab_decode_cjk_8": "解码通道：中文 10 字",
+    "ab_decode_cjk_64": "解码通道：中文 52 字",
+    "ab_decode_kana_16": "解码通道：日文 16 字",
+    "ab_decode_emoji_5": "解码通道：emoji",
+    "ab_decode_mixed_16": "解码通道：中英混排 + emoji",
+    "ab_decode_ascii_12": "解码通道：ASCII 12 字节",
+    "ab_decode_ascii_47": "解码通道：ASCII 47 字节",
 }
 
 for _b in ("16", "128", "1024", "8192"):
@@ -65,6 +82,9 @@ METRIC_LABELS = {
     "speedup": "加速比",
     "score": "得分",
     "error": "误差",
+    "flinkable_before": "flinkable（改造前）",
+    "flinkable_borrow": "flinkable（借用零分配）",
+    "flinkable_reuse": "flinkable（复用目标对象）",
 }
 
 UNIT_LABELS = {

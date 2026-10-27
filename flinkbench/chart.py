@@ -67,6 +67,8 @@ def render(con, out_path, title):
         panels.append("memory")
     if _has(con, "framing_encode") and _has(con, "framing_decode"):
         panels.append("throughput")
+    if all(_has(con, k) for k in ("ab_encode_cjk_8", "ab_decode_cjk_8", "serde_shape_cjk10")):
+        panels.append("shapes")
 
     n = len(panels)
     if n == 0:
@@ -138,6 +140,38 @@ def render(con, out_path, title):
             ax.set_title("③ 端到端耗时（含计算）", fontsize=10)
             ax.legend(fontsize=7.5, loc="upper left")
             ax.set_ylim(15, max(l1) * 6)
+        elif panel == "shapes":
+            # M128: the non-ASCII lanes, priced against the JVM in the same session. The
+            # before bar is the M126 codec, the after bar the back-patched and reuse-target
+            # lanes, the grey bar the real Flink StringSerializer round trip.
+            specs = [("ab_encode_cjk_8", "ab_decode_cjk_8", "serde_shape_cjk10", "中文 10 字"),
+                     ("ab_encode_mixed_16", "ab_decode_mixed_16", "serde_shape_mixed", "中英混排\n+ emoji")]
+            specs = [sp for sp in specs if _has(con, sp[0]) and _has(con, sp[2])]
+            before, after, jvm, gains = [], [], [], []
+            for enc, dec, jvmcase, _label in specs:
+                b = _latest(con, enc, "flinkable_before")[0] + _latest(con, dec, "flinkable_before")[0]
+                a = _latest(con, enc, "flinkable")[0] + _latest(con, dec, "flinkable")[0]
+                before.append(b); after.append(a); jvm.append(_latest(con, jvmcase, "flink_jvm")[0])
+                gains.append((b - a) * 100.0 / b)
+            # The vs-JVM multiple rides in the tick label: annotating it above a bar always
+            # collides with that bar's own value label.
+            groups = ["%s\n对原版 %.2f 倍" % (sp[3], jvm[i] / after[i]) for i, sp in enumerate(specs)]
+            x = range(len(groups))
+            b1 = ax.bar([i - w for i in x], before, w * 0.9, color="#c5d4ee", label="flinkable（改造前）")
+            b2 = ax.bar(list(x), after, w * 0.9, color=BLUE, label="flinkable（改造后）")
+            b3 = ax.bar([i + w for i in x], jvm, w * 0.9, color=GRAY, label="Apache Flink 原版（JVM）")
+            _bar_labels(ax, list(b1) + list(b2) + list(b3))
+            headroom = max(max(before) * 1.16, max(jvm) * 1.16)
+            for i in x:
+                ax.annotate("改造后提速 %.0f%%" % gains[i], (i, headroom),
+                            ha="center", fontsize=8, color=BLUE)
+
+            ax.set_xticks(list(x), groups)
+            ax.tick_params(axis="x", labelsize=8)
+            ax.set_ylabel("每记录往返耗时（纳秒，越低越好）")
+            ax.set_title("⑥ 非 ASCII 字符串编解码（同会话 A/B：改造前后与原版并列）", fontsize=10)
+            ax.legend(fontsize=7.5, loc="upper center", ncol=3, framealpha=1.0)
+            ax.set_ylim(0, max(before) * 1.62)
         elif panel == "memory":
             jvm = _latest(con, "memory_engine_rss", "flink_jvm")[0]
             native = _latest(con, "memory_engine_rss", "flinkable")[0]
@@ -236,6 +270,8 @@ def _draw_trend(fig, gs, row, trend):
     ax.set_xlim(xs[0] - 0.35, xs[-1] + 1.05)
     ax.set_xticks(xs, labels, fontsize=8)
     ax.set_ylabel("每记录耗时（纳秒，对数轴）")
-    ax.set_title("⑥ 时间线趋势与回归标记（官方方法论核心视图：同一指标随摄取次序的走势）", fontsize=10)
-    ax.legend(fontsize=8, loc="upper right")
+    ax.set_title("⑦ 时间线趋势与回归标记（官方方法论核心视图：同一指标随摄取次序的走势）", fontsize=10)
+    # Legend above the axes: the end-of-line 改善/恶化 markers own the right margin.
+    ax.legend(fontsize=8, loc="lower left", bbox_to_anchor=(0.0, 1.01, 1.0, 0.15),
+              mode="expand", ncol=3, framealpha=1.0)
     ax.grid(axis="y", which="both", alpha=0.25)
