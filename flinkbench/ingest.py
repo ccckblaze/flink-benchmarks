@@ -121,6 +121,25 @@ MEASURED_PATTERNS = [
      lambda m: [("serde_" + _case(m[0]), "flinkable", m[1], "ns/rec", LB),
                 ("serde_" + _case(m[0]), "flink_jvm", m[2], "ns/rec", LB),
                 ("serde_" + _case(m[0]), "flink_over_flinkable", m[3], "x", HB)]),
+    # M131: the incumbent encoder on the same columnar wire — PyFlink's ArrowCoder shape
+    # (one self-contained IPC stream per batch), priced in the anchor Python.
+    (r"MEASURED pyflink coder: encode ([\d.]+) ns/row, decode ([\d.]+) ns/row",
+     lambda m: [("framing_coder", "pyflink_enc", m[0], "ns/rec", LB),
+                ("framing_coder", "pyflink_dec", m[1], "ns/rec", LB),
+                ("framing_coder", "pyflink", str(float(m[0]) + float(m[1])), "ns/rec", LB)]),
+    # M131: standardized distributed-deployment RSS — one JobManager + one TaskManager,
+    # WordCount over a 5.5 GB data-disk input, medians of twenty 3 s samples per process.
+    (r"MEM\|(jm|tm)\|jvm=([\d.]+)\|flinkable=([\d.]+)",
+     lambda m: [("memory_" + m[0] + "_rss", "flink_jvm", m[1], "MB", LB),
+                ("memory_" + m[0] + "_rss", "flinkable", m[2], "MB", LB),
+                ("memory_" + m[0] + "_rss", "flink_over_flinkable", str(float(m[1]) / float(m[2])), "x", HB)]),
+    # M131: columnar framing vs JVM row serialization, same record shape, one session.
+    (r"P58-TABLE\|bulk4\|rust_enc=([\d.]+)\|rust_dec=([\d.]+)\|rust=([\d.]+)\|jvm=([\d.]+)\|jvm_over_rust=([\d.]+)x",
+     lambda m: [("bulk4_framing", "flink_enc", m[0], "ns/rec", LB),
+                ("bulk4_framing", "flink_dec", m[1], "ns/rec", LB),
+                ("bulk4_framing", "flinkable", m[2], "ns/rec", LB),
+                ("bulk4_framing", "flink_jvm", m[3], "ns/rec", LB),
+                ("bulk4_framing", "flink_over_flinkable", m[4], "x", HB)]),
     # M129: both engines' string terms in one session — construction vs codec.
     (r"P57-TABLE\|string-terms\|rust_construct=([\d.]+)\|rust_codec=([\d.]+)\|jvm_construct=([\d.]+)\|jvm_codec=([\d.]+)\|construct_over_rust=([\d.]+)x\|codec_over_rust=([\d.]+)x",
      lambda m: [("serde_string_construct", "flinkable", m[0], "ns/rec", LB),

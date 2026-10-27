@@ -65,7 +65,9 @@ def render(con, out_path, title):
         panels.append("compute")
     if _has(con, "memory_engine_rss"):
         panels.append("memory")
-    if _has(con, "framing_encode") and _has(con, "framing_decode"):
+    if _has(con, "bulk4_framing") and _has(con, "framing_coder"):
+        panels.append("shuffle")
+    elif _has(con, "framing_encode") and _has(con, "framing_decode"):
         panels.append("throughput")
     if all(_has(con, k) for k in ("ab_encode_cjk_8", "ab_decode_cjk_8", "serde_shape_cjk10")):
         panels.append("shapes")
@@ -136,14 +138,18 @@ def render(con, out_path, title):
             ax.legend(fontsize=7.5, loc="upper right")
             ax.set_ylim(0.2, max(l1) * 8)
         elif panel == "compute":
-            groups = ["向量化计算\n（Apache Arrow）", "pandas 计算"]
+            # Both bars compute on Arrow columnar batches; what differs is the kernel and
+            # the channel: arrow-rs in-process zero-copy vs pyarrow behind Arrow IPC.
+            groups = ["向量化计算\n（Arrow 列式）", "pandas 计算\n（Arrow 列式喂入）"]
             cases = ["compute_arrow_native", "compute_pandas"]
             l2 = [_latest(con, c, "l2_end_to_end")[0] for c in cases]
             l1 = [_latest(con, c, "l1_end_to_end")[0] for c in cases]
             ratios = [_latest(con, c, "end_to_end_ratio")[0] for c in cases]
             x = range(len(groups))
-            ax.bar([i - w / 2 for i in x], l2, w, color=BLUE, label="flinkable（传输零拷贝 + 计算）")
-            ax.bar([i + w / 2 for i in x], l1, w, color=GRAY, label="原版 PyFlink（进程间通道 + 计算）")
+            ax.bar([i - w / 2 for i in x], l2, w, color=BLUE,
+                   label="flinkable（arrow-rs 内核，进程内零拷贝）")
+            ax.bar([i + w / 2 for i in x], l1, w, color=GRAY,
+                   label="原版 PyFlink（pyarrow 内核，Arrow IPC 进程间）")
             ax.set_yscale("log")
             _bar_labels(ax, [bar for container in ax.containers for bar in container], "{:.1f}")
             ax.annotate("端到端 %.2f 倍" % ratios[0], (0, l1[0] * 2.2), ha="center", fontsize=9, color=BLUE)
@@ -155,46 +161,97 @@ def render(con, out_path, title):
             ax.legend(fontsize=7.5, loc="upper left")
             ax.set_ylim(15, max(l1) * 6)
         elif panel == "shapes":
-            # M128: the non-ASCII lanes, priced against the JVM in the same session. The
-            # before bar is the M126 codec, the after bar the back-patched and reuse-target
-            # lanes, the grey bar the real Flink StringSerializer round trip.
+            # M131: the final effect only — the current non-ASCII lanes beside the real
+            # Flink StringSerializer round trip, priced in one session. The before/after
+            # history lives in the ledger, not on the comparison chart.
             specs = [("ab_encode_cjk_8", "ab_decode_cjk_8", "serde_shape_cjk10", "中文 10 字"),
                      ("ab_encode_mixed_16", "ab_decode_mixed_16", "serde_shape_mixed", "中英混排\n+ emoji")]
             specs = [sp for sp in specs if _has(con, sp[0]) and _has(con, sp[2])]
-            before, after, jvm, gains = [], [], [], []
+            after, jvm = [], []
             for enc, dec, jvmcase, _label in specs:
-                b = _latest(con, enc, "flinkable_before")[0] + _latest(con, dec, "flinkable_before")[0]
-                a = _latest(con, enc, "flinkable")[0] + _latest(con, dec, "flinkable")[0]
-                before.append(b); after.append(a); jvm.append(_latest(con, jvmcase, "flink_jvm")[0])
-                gains.append((b - a) * 100.0 / b)
-            # The vs-JVM multiple rides in the tick label: annotating it above a bar always
-            # collides with that bar's own value label.
-            groups = ["%s\n对原版 %.2f 倍" % (sp[3], jvm[i] / after[i]) for i, sp in enumerate(specs)]
+                after.append(_latest(con, enc, "flinkable")[0] + _latest(con, dec, "flinkable")[0])
+                jvm.append(_latest(con, jvmcase, "flink_jvm")[0])
+            groups = [sp[3] for sp in specs]
             x = range(len(groups))
-            b1 = ax.bar([i - w for i in x], before, w * 0.9, color="#c5d4ee", label="flinkable（改造前）")
-            b2 = ax.bar(list(x), after, w * 0.9, color=BLUE, label="flinkable（改造后）")
-            b3 = ax.bar([i + w for i in x], jvm, w * 0.9, color=GRAY, label="Apache Flink 原版（JVM）")
-            _bar_labels(ax, list(b1) + list(b2) + list(b3))
-            headroom = max(max(before) * 1.16, max(jvm) * 1.16)
+            b2 = ax.bar([i - w / 2 for i in x], after, w, color=BLUE, label="flinkable（Rust 原生）")
+            b3 = ax.bar([i + w / 2 for i in x], jvm, w, color=GRAY, label="Apache Flink 原版（JVM）")
+            _bar_labels(ax, list(b2) + list(b3))
             for i in x:
-                ax.annotate("改造后提速 %.0f%%" % gains[i], (i, headroom),
-                            ha="center", fontsize=8, color=BLUE)
-
+                ratio = jvm[i] / after[i]
+                word = "Rust 快 %.2f 倍" % ratio if ratio >= 1 else "Rust 慢 %.2f 倍" % (1 / ratio)
+                ax.annotate(word, (i, (after[i] + jvm[i]) / 2), ha="center", fontsize=9,
+                            color=BLUE if ratio >= 1 else "#a33",
+                            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
             ax.set_xticks(list(x), groups)
             ax.tick_params(axis="x", labelsize=8)
             ax.set_ylabel("每记录往返耗时（纳秒，越低越好）")
-            ax.set_title("⑥ 非 ASCII 字符串编解码（同会话 A/B：改造前后与原版并列）", fontsize=10)
-            ax.legend(fontsize=7.5, loc="upper center", ncol=3, framealpha=1.0)
-            ax.set_ylim(0, max(before) * 1.62)
+            ax.set_title("⑥ 非 ASCII 字符串编解码（与原版同会话并列）", fontsize=10)
+            ax.legend(fontsize=7.5, loc="upper right")
+            ax.set_ylim(0, max(after + jvm) * 1.28)
+            ax.set_ylim(0, max(after + jvm) * 1.28)
         elif panel == "memory":
-            jvm = _latest(con, "memory_engine_rss", "flink_jvm")[0]
-            native = _latest(con, "memory_engine_rss", "flinkable")[0]
-            ax.barh(["原版（JVM）", "flinkable"], [jvm, native], color=[GRAY, BLUE])
-            ax.set_xlabel("引擎侧常驻内存 RSS 峰值（MB）")
-            ax.annotate("−%.0f%%（微基准口径）" % (100.0 * (1 - native / jvm)),
-                        (native * 1.8, 1), fontsize=8, color=BLUE)
-            ax.set_title("④ 框架基础内存开销", fontsize=10)
-            ax.invert_yaxis()
+            if _has(con, "memory_jm_rss"):
+                # M131: the standardized distributed deployment — one JobManager plus one
+                # TaskManager running WordCount over a 5.5 GB data-disk input, medians of
+                # twenty RSS samples per process. The Java JM is the same process on both
+                # sides (the control plane is kept), so the delta rides entirely on the TM.
+                orange = "#e8a33d"
+                jm_jvm = _latest(con, "memory_jm_rss", "flink_jvm")[0]
+                tm_jvm = _latest(con, "memory_tm_rss", "flink_jvm")[0]
+                jm_fab = _latest(con, "memory_jm_rss", "flinkable")[0]
+                tm_fab = _latest(con, "memory_tm_rss", "flinkable")[0]
+                cats = ["Apache Flink 原版", "flinkable"]
+                totals = [jm_jvm + tm_jvm, jm_fab + tm_fab]
+                ax.bar(cats, [jm_jvm, jm_fab], 0.5, color=orange,
+                       label="JobManager（Java，两侧同源）")
+                ax.bar(cats, [tm_jvm, tm_fab], 0.5, bottom=[jm_jvm, jm_fab],
+                       color=[GRAY, BLUE], label="TaskManager")
+                ax.annotate("JM %.0f" % jm_jvm, (0, jm_jvm / 2), ha="center", fontsize=8, color="white")
+                ax.annotate("TM %.0f" % tm_jvm, (0, jm_jvm + tm_jvm / 2), ha="center", fontsize=8, color="white")
+                ax.annotate("JM %.0f" % jm_fab, (1, jm_fab / 2), ha="center", fontsize=8, color="white")
+                ax.annotate("TM %.1f" % tm_fab, (1, jm_fab + tm_fab + 42), ha="center", fontsize=8, color=BLUE)
+                for x, tot in enumerate(totals):
+                    ax.annotate("%.0f MB" % tot, (x, tot * 1.015), ha="center", fontsize=9)
+                ax.annotate("总占用 −%.0f%%" % (100.0 * (1 - totals[1] / totals[0])),
+                            (0.5, max(totals) * 1.1), ha="center", fontsize=9, color=BLUE,
+                            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
+                ax.set_ylabel("常驻内存 RSS（MB，越低越好）")
+                ax.set_title("④ 分布式部署内存（1 JM + 1 TM，WordCount 5.5 GB 运行中）", fontsize=9.5)
+                ax.legend(fontsize=7.5, loc="upper right")
+                ax.set_ylim(0, max(totals) * 1.28)
+            else:
+                jvm = _latest(con, "memory_engine_rss", "flink_jvm")[0]
+                native = _latest(con, "memory_engine_rss", "flinkable")[0]
+                ax.barh(["原版（JVM）", "flinkable"], [jvm, native], color=[GRAY, BLUE])
+                ax.set_xlabel("引擎侧常驻内存 RSS 峰值（MB）")
+                ax.annotate("−%.0f%%（微基准口径）" % (100.0 * (1 - native / jvm)),
+                            (native * 1.8, 1), fontsize=8, color=BLUE)
+                ax.set_title("④ 框架基础内存开销", fontsize=10)
+                ax.invert_yaxis()
+        elif panel == "shuffle":
+            # M131: the honest counterpart of the columnar framing wire is the encoder the
+            # original PyFlink worker runs on the SAME contract (one self-contained IPC
+            # stream per batch) — not Flink's row serializer, which prices a different
+            # wire entirely (that leg stays in the tables as a diagnostic).
+            total = _latest(con, "bulk4_framing", "flinkable")[0]
+            enc = _latest(con, "bulk4_framing", "flink_enc")[0]
+            dec = _latest(con, "bulk4_framing", "flink_dec")[0]
+            py = _latest(con, "framing_coder", "pyflink")[0]
+            b1 = ax.bar([-w / 2], [total], w, color=BLUE, label="flinkable（arrow-rs 编码/解码）")
+            b2 = ax.bar([w / 2], [py], w, color=GRAY, label="原版 PyFlink（pyarrow ArrowCoder）")
+            _bar_labels(ax, list(b1) + list(b2), "{:.1f}")
+            ax.annotate("编码 %.1f + 解码 %.1f" % (enc, dec), (-w / 2, total * 0.45),
+                        ha="center", fontsize=8, color="white")
+            ratio = py / total
+            word = "Rust 快 %.2f 倍" % ratio if ratio >= 1 else "Rust 慢 %.2f 倍" % (1 / ratio)
+            ax.annotate(word, (0, (total + py) / 2), ha="center", fontsize=9,
+                        color=BLUE if ratio >= 1 else "#a33",
+                        bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
+            ax.set_xticks([0], ["定长 4 列记录\n（每记录 32 字节）"])
+            ax.set_ylabel("每记录往返耗时（纳秒，越低越好）")
+            ax.set_title("⑤ 列式帧编解码往返（Python 算子线格式：同一契约两引擎）", fontsize=9.5)
+            ax.legend(fontsize=7.5, loc="upper left")
+            ax.set_ylim(0, max(total, py) * 1.3)
         elif panel == "throughput":
             enc = _latest(con, "framing_encode", "throughput")[0]
             dec = _latest(con, "framing_decode", "throughput")[0]
