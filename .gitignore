@@ -19,3 +19,6 @@ out/
 *.ipr
 *.iws
 jmh-result*.csv
+flinkbench/bench.db
+flinkbench/out/
+__pycache__/
