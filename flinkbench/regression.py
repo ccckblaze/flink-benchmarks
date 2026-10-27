@@ -67,9 +67,15 @@ def _stddev(xs):
 def scan_store(con, **kwargs):
     """Yield (case, metric, status, detail) for every stored key."""
     out = []
+    # Derived ratio series (jvm-over-rust style) mix two measurements from one session;
+    # JVM-side drift alone can move them past the threshold, so they are reported in the
+    # tables but never judged here. Only raw measured series get a regression verdict.
+    derived = {"flink_over_flinkable", "transfer_ratio", "end_to_end_ratio"}
     for case, metric in con.execute(
         "SELECT DISTINCT case_name, metric FROM metrics ORDER BY case_name, metric"
     ).fetchall():
+        if metric in derived:
+            continue
         values = [v for (v,) in con.execute(
             """SELECT m.value FROM metrics m JOIN runs r ON r.id = m.run_id
                WHERE m.case_name = ? AND m.metric = ? ORDER BY r.ts ASC, r.id ASC""",

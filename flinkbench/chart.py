@@ -84,23 +84,37 @@ def render(con, out_path, title):
 
     for idx, (ax, panel) in enumerate(zip(flat, panels)):
         if panel == "serde":
-            groups = ["定长字段\n（整数+长整数）", "字符串\n（含构造）"]
-            cases = ["serde_int_long", "serde_string"]
+            # M130: the headline is the whole chain — construction, encode and decode in
+            # one lane, engine memory reuse included. No term splits, no cherry-picking:
+            # this is the same shape the JVM leg (fresh String per record, both ends) pays.
+            if _has(con, "serde_string_full"):
+                cases = ["serde_int_long", "serde_string_full"]
+                groups = ["定长字段\n（整数+长整数）", "字符串\n（全链条）"]
+            else:
+                cases = ["serde_int_long", "serde_string"]
+                groups = ["定长字段\n（整数+长整数）", "字符串\n（含构造）"]
             native = [_latest(con, c, "flinkable")[0] for c in cases]
             jvm = [_latest(con, c, "flink_jvm")[0] for c in cases]
+            ratios = [_latest(con, c, "flink_over_flinkable") for c in cases]
             x = range(len(groups))
             b1 = ax.bar([i - w / 2 for i in x], native, w, color=BLUE, label="flinkable（Rust 原生）")
             b2 = ax.bar([i + w / 2 for i in x], jvm, w, color=GRAY, label="Apache Flink 原版（JVM）")
             _bar_labels(ax, list(b1) + list(b2))
-            ratio = _latest(con, "serde_int_long", "flink_over_flinkable")
-            if ratio:
-                ax.annotate("Rust 快 %.2f 倍" % ratio[0], (0, max(native + jvm) * 1.15),
-                            ha="center", fontsize=9, color=BLUE)
+            for i, ratio in enumerate(ratios):
+                if not ratio:
+                    continue
+                word = "Rust 快 %.2f 倍" % ratio[0] if ratio[0] >= 1 else "Rust 慢 %.2f 倍" % (1 / ratio[0])
+                # The empty column between the two bars, at the mean of their tops: a
+                # shared top row collides with the legend, a per-bar row with the value labels.
+                ax.annotate(word, (i, (native[i] + jvm[i]) / 2), ha="center", fontsize=9,
+                            color=BLUE if ratio[0] >= 1 else "#a33",
+                            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
             ax.set_xticks(list(x), groups)
             ax.set_ylabel("每记录往返耗时（纳秒，越低越好）")
-            ax.set_title("① 序列化 / 反序列化往返（字节格式与 Flink 原版完全一致，逐字节校验）", fontsize=10)
+            ax.set_title("① 序列化 / 反序列化往返（字节格式与 Flink 原版完全一致，逐字节校验；"
+                         "同一会话并列）", fontsize=10)
             ax.legend(fontsize=8, loc="upper right")
-            ax.set_ylim(0, max(native + jvm) * 1.35)
+            ax.set_ylim(0, max(native + jvm) * 1.28)
         elif panel == "smallbatch":
             batches = ["16", "128", "1024", "8192"]
             l2 = [_latest(con, "smallbatch_" + b, "l2_zero_copy")[0] for b in batches]
@@ -213,6 +227,7 @@ TREND_SERIES = [
     ("serde_string", "flinkable", "字符串 flinkable", BLUE, "o"),
     ("serde_string", "flink_jvm", "字符串 原版（JVM）", GRAY, "s"),
     ("serde_int_long", "flinkable", "定长字段 flinkable", "#2e9e57", "^"),
+    ("serde_string_full", "flinkable", "字符串全链条 flinkable", "#7a5cc4", "D"),
 ]
 
 

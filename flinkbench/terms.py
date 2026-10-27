@@ -24,6 +24,7 @@ Internal ledger slang never reaches a report through this table.
 CASE_LABELS = {
     "serde_int_long": "序列化往返：定长字段（整数+长整数）",
     "serde_string": "序列化往返：字符串（含构造）",
+    "serde_string_full": "序列化往返：字符串（全链条：构造+编解码）",
     "serde_owned_form_int_long": "序列化往返（自有缓冲形态，历史基线）：定长字段",
     "serde_owned_form_string": "序列化往返（自有缓冲形态，历史基线）：字符串",
     "framing_encode": "列式帧编码（Apache Arrow）",
@@ -38,6 +39,8 @@ CASE_LABELS = {
     "cross_task_hop_floor": "跨任务通道往返下限",
     "memory_engine_rss": "引擎侧常驻内存 RSS",
     "serde_shape_cjk10": "序列化往返：中文 10 字（非 ASCII）",
+    "serde_string_codec": "序列化往返：字符串（仅编解码）",
+    "serde_string_construct": "值构造项（基准开销，引擎不做构造）",
     "serde_shape_cjk40": "序列化往返：中文 40 字（非 ASCII）",
     "serde_shape_mixed": "序列化往返：中英混排 + emoji",
     "ab_encode_cjk_8": "编码通道：中文 10 字",

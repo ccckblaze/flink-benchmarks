@@ -121,6 +121,14 @@ MEASURED_PATTERNS = [
      lambda m: [("serde_" + _case(m[0]), "flinkable", m[1], "ns/rec", LB),
                 ("serde_" + _case(m[0]), "flink_jvm", m[2], "ns/rec", LB),
                 ("serde_" + _case(m[0]), "flink_over_flinkable", m[3], "x", HB)]),
+    # M129: both engines' string terms in one session — construction vs codec.
+    (r"P57-TABLE\|string-terms\|rust_construct=([\d.]+)\|rust_codec=([\d.]+)\|jvm_construct=([\d.]+)\|jvm_codec=([\d.]+)\|construct_over_rust=([\d.]+)x\|codec_over_rust=([\d.]+)x",
+     lambda m: [("serde_string_construct", "flinkable", m[0], "ns/rec", LB),
+                ("serde_string_construct", "flink_jvm", m[2], "ns/rec", LB),
+                ("serde_string_construct", "flink_over_flinkable", m[4], "x", HB),
+                ("serde_string_codec", "flinkable", m[1], "ns/rec", LB),
+                ("serde_string_codec", "flink_jvm", m[3], "ns/rec", LB),
+                ("serde_string_codec", "flink_over_flinkable", m[5], "x", HB)]),
     # M128 same-session before/after: the M126 shapes priced beside the M128 lanes.
     (r"AB\|([^|]+)\|enc_old=([\d.]+)\|enc_new=([\d.]+)\|dec_old=([\d.]+)\|dec_new=([\d.]+)\|dec_cow=([\d.]+)",
      lambda m: [("ab_encode_" + m[0], "flinkable_before", m[1], "ns/rec", LB),
