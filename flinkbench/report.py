@@ -136,15 +136,22 @@ def generate(con, out_dir, title, env_lines):
                         case_label(case), metric_label(metric), " | ".join(cells)))
     lines += ["", "## 回归检查（基线窗口算法，移植自上游 regression_report_v2）", ""]
     lines += ["| 指标 | 度量 | 状态 |", "| --- | --- | --- |"]
+    insufficient = 0
+    judged = 0
     for case, metric, status, detail in regression.scan_store(con):
-        if status == "regression":
-            note = "回退 %.1f%%（阈值 %.1f%%）" % (
-                detail["regression_ratio"] * 100, detail["threshold"] * 100)
-        elif status == "insufficient_samples":
-            note = "样本不足（<5 次摄取）"
-        else:
-            note = "正常"
+        if status == "insufficient_samples":
+            insufficient += 1
+            continue
+        judged += 1
+        note = ("回退 %.1f%%（阈值 %.1f%%）" % (
+            detail["regression_ratio"] * 100, detail["threshold"] * 100)
+            if status == "regression" else "正常")
         lines.append("| %s | %s | %s |" % (case_label(case), metric_label(metric), note))
+    if judged == 0:
+        lines.append("| （已判定项） | — | 无回退 |")
+    if insufficient:
+        lines += ["", "另有 %d 项序列摄取次数不足 5 次，按上游方法论不参与回归判定，"
+                      "仅计入趋势面板。" % insufficient]
     lines += ["", "## 术语对照", "",
               "| 报告用词 | Flink 文档对应 |", "| --- | --- |",
               "| 序列化 / 反序列化 | Serialization / Deserialization |",
@@ -153,6 +160,11 @@ def generate(con, out_dir, title, env_lines):
               "| 零拷贝 | zero-copy（Apache Arrow） |",
               "| 进程间通道 | inter-process data plane（Beam worker，Arrow IPC） |",
               "| 常驻内存（RSS） | Resident Set Size |",
+              "| 改造前 / 改造后 | before / after（同一二进制内的 A/B 腿） |",
+              "| 借用零分配 | zero-copy decode，借用输入缓冲不新建字符串 |",
+              "| 值构造项 | 基准里构造输入对象的费用，非引擎开销 |",
+              "| 同会话 | 同一台机器、同一次运行内并列测量（跨会话不可比） |",
+              "| 非 ASCII 形状 | 中文 / 日文 / emoji（UTF-16 码元多字节形制） |",
               "| 吞吐量 | throughput |",
               "| shuffle 随机取数 | shuffle read（Arrow take） |", ""]
     path = os.path.join(out_dir, "report.md")
