@@ -438,12 +438,16 @@ def render(con, out_path, title):
                     jm_py = _latest(con, "memory_jm_rss", "flink_pyflink")[0]
                     tm_py = _latest(con, "memory_tm_rss", "flink_pyflink")[0]
                     py_py = _latest(con, "memory_py_rss", "flink_pyflink")[0]
-                    cats = ["Flink", "Flink PyFlink", "Flinkable\n（Java 作业）",
-                            "Flinkable\n（Python 作业）"] if has_fab_py else \
-                           ["Flink", "Flink PyFlink", "Flinkable"]
-                    tops = [jm_jvm, jm_py, jm_fab] + ([jm_fab] if has_fab_py else [])
-                    mids = [tm_jvm, tm_py, tm_fab] + ([tm_fab_py] if has_fab_py else [])
-                    bots = [0.0, py_py, 0.0] + ([0.0] if has_fab_py else [])
+                    # M159: like-for-like adjacency — the Java pair (Flink vs
+                    # Flinkable Java job) and the Python pair (PyFlink vs
+                    # Flinkable Python job) sit next to each other so each
+                    # delta is read inside its own workload group.
+                    cats = ["Flink\n（Java 作业）", "Flinkable\n（Java 作业）",
+                            "Flink\n（PyFlink 作业）", "Flinkable\n（Python 作业）"] if has_fab_py else \
+                           ["Flink\n（Java 作业）", "Flinkable\n（Java 作业）", "Flink\n（PyFlink 作业）"]
+                    tops = [jm_jvm, jm_fab] + ([jm_py, jm_fab] if has_fab_py else [jm_py])
+                    mids = [tm_jvm, tm_fab] + ([tm_py, tm_fab_py] if has_fab_py else [tm_py])
+                    bots = [0.0, 0.0] + ([py_py, 0.0] if has_fab_py else [py_py])
                     # M148: the flinkable Python interpreter lives inside the TM process,
                     # so its bar decomposes along the embedded probe's RSS steps: Rust
                     # runtime, the CPython interpreter floor, the pyarrow/pandas library
@@ -465,7 +469,8 @@ def render(con, out_path, title):
                         totals[3] += fab_py_split[1] + fab_py_split[2]
                     ax.bar(cats, tops, 0.55, color=orange,
                            label="JobManager")
-                    ax.bar(cats, mids, 0.55, bottom=tops, color=[GRAY, GRAY, BLUE],
+                    ax.bar(cats, mids, 0.55, bottom=tops,
+                           color=[GRAY, BLUE, GRAY, BLUE][:len(cats)],
                            label="TaskManager")
                     ax.bar(cats, bots, 0.55,
                            bottom=[t + m for t, m in zip(tops, mids)],
@@ -479,6 +484,8 @@ def render(con, out_path, title):
                                label="Python 库")
                         ax.bar([3], [other_share], 0.55, bottom=[top3 + libs_share], color=light,
                                label="其它 Python 开销")
+                    if has_fab_py:
+                        ax.axvline(1.5, color="#e2e2e2", lw=0.8, zorder=0)
                     for x, (t, m) in enumerate(zip(tops, mids)):
                         ax.annotate("JM %.0f" % t, (x, t / 2), ha="center", fontsize=8, color="white")
                         if x == 3 and fab_py_split is not None:
@@ -491,8 +498,8 @@ def render(con, out_path, title):
                             ax.annotate("TM %.0f" % m, (x, t + m / 2), ha="center", fontsize=8, color="white")
                         else:
                             ax.annotate("TM %.0f" % m, (x, t + m / 2), ha="center", fontsize=8, color="white")
-                    if has_py and bots[1] > 0:
-                        ax.annotate("PY %.0f" % bots[1], (1, tops[1] + mids[1] + bots[1] / 2),
+                    if has_py and bots[2] > 0:
+                        ax.annotate("PY %.0f" % bots[2], (2, tops[2] + mids[2] + bots[2] / 2),
                                     ha="center", fontsize=8, color="white")
                 else:
                     cats = ["Apache Flink 原版", "flinkable"]
@@ -509,11 +516,11 @@ def render(con, out_path, title):
                 # M158: the percentage rides on the Flinkable bars' totals —
                 # no floating summary block, no leader-line annotations.
                 for x, tot in enumerate(totals):
-                    if has_py and x == 2:
-                        txt = "%.0f MB\nTM %.1f · −%.0f%%" % (tot, mids[2],
+                    if has_py and x == 1:
+                        txt = "%.0f MB\nTM %.1f · −%.0f%%" % (tot, mids[1],
                                                                100.0 * (1 - tot / totals[0]))
                     elif has_py and x == 3:
-                        txt = "%.0f MB\n较 PyFlink −%.0f%%" % (tot, 100.0 * (1 - tot / totals[1]))
+                        txt = "%.0f MB\n较 PyFlink −%.0f%%" % (tot, 100.0 * (1 - tot / totals[2]))
                     elif not has_py and x == 1:
                         txt = "%.0f MB\n较 Flink −%.0f%%" % (tot, 100.0 * (1 - tot / totals[0]))
                     else:
@@ -524,7 +531,8 @@ def render(con, out_path, title):
                                 textcoords="offset points", fontsize=8.5,
                                 color=BLUE if "\n" in txt else "black")
                 ax.set_ylabel("常驻内存 RSS（MB，越低越好）")
-                ax.set_title("④ 分布式部署内存（1 JM + 1 TM，WordCount 5.5 GB 运行中）",
+                ax.set_title("④ 分布式部署内存（1 JM + 1 TM，WordCount 5.5 GB 运行中）\n"
+                             "同作业成对对比：左对＝Java 作业 · 右对＝Python 作业",
                              fontsize=9.5, pad=56)
                 # M157: legend above the axes with short labels — the long
                 # per-process descriptions collided in two columns at cell
