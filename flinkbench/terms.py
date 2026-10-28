@@ -63,6 +63,7 @@ CASE_LABELS = {
     "backpressure_skew_jvm": "反压·数据倾斜一热（Flink，设预算）",
     "backpressure_union": "反压·多输入归并一慢（Flinkable，未设预算）",
     "backpressure_union_capped": "反压·多输入归并一慢（Flinkable，设预算）",
+    "backpressure_union_gates_jvm": "反压·多输入归并一慢（Flink，设预算）",
     "backpressure_capture": "反压·非对齐检查点在途快照（Flinkable）",
     "backpressure_capture_jvm": "反压·非对齐检查点在途快照（Flink）",
     "backpressure_python": "反压·Python 算子停读（Flinkable 嵌入式）",

@@ -146,7 +146,8 @@ def generate(con, out_dir, title, env_lines):
         ("数据倾斜·一热", "Flinkable·设预算", "backpressure_skew_capped"),
         ("数据倾斜·一热", "Flink·设预算", "backpressure_skew_jvm"),
         ("数据倾斜·一热", "Flinkable·显式关闭预算", "backpressure_skew"),
-        ("多输入归并·一慢（Flinkable 内部边）", "Flinkable·设预算", "backpressure_union_capped"),
+        ("多输入归并·一慢（每门/每通道独立配额）", "Flinkable·设预算", "backpressure_union_capped"),
+        ("多输入归并·一慢（每门/每通道独立配额）", "Flink·设预算", "backpressure_union_gates_jvm"),
         ("多输入归并·一慢（Flinkable 内部边）", "Flinkable·显式关闭预算", "backpressure_union"),
         ("任务间通道停读（Flinkable 内部边）", "Flinkable·设预算", "backpressure_channel_capped"),
         ("任务间通道停读（Flinkable 内部边）", "Flinkable·显式关闭预算", "backpressure_channel"),
@@ -211,7 +212,7 @@ def generate(con, out_dir, title, env_lines):
                       "默认配置即与 Flink 同为“设预算”，图⑦只保留可配平的设预算柱对；"
                       "表中 显式关闭预算 行是 `unbounded()` 选离的对照腿，仅用于展示预算的边际效果。"
                       "广播/倾斜封顶后热通道 0.5 MB、RSS 5.3/4.7 MB，与 Flink·设预算 的 83/84 MB 同口径可比。"
-                      "任务间通道/多输入归并为 Flinkable 进程内边，Flink 无对应，单列不参与跨引擎配平。" + interp_note]
+                      "任务间通道为 Flinkable 进程内边，Flink 无对应，单列不参与跨引擎配平；多输入归并已按 Flink 自身语义补对照腿（`BPJ|union_gates`：每输入门独立 LocalBufferPool、配额同为 64 段，健康门即收即还）——两侧都回答“一慢时健康门是否被拖累”，柱对成立：热侧积压同为 2.0 MB、拒绝同为 1984、健康侧同为 0——语义逐项对齐；RSS 峰值 Flinkable 4.9 MB vs Flink 88.5 MB（差值即 JVM 基线 + 池预留），排空后 4.0 vs 89.3。" + interp_note]
 
     # M151: end-to-end backpressure — the producer-side park, priced for both
     # the in-process edge and the network data plane. These are latency/flatness

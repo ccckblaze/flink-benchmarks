@@ -369,8 +369,9 @@ def render(con, out_path, title):
                     ("backpressure_skew_jvm", True)]),
                 ("任务间通道停读\n（Flinkable 内部边）", [
                     ("backpressure_channel_capped", False)]),
-                ("多输入归并·一慢\n（Flinkable 内部边）", [
-                    ("backpressure_union_capped", False)]),
+                ("多输入归并·一慢\n（每门/每通道独立配额）", [
+                    ("backpressure_union_capped", False),
+                    ("backpressure_union_gates_jvm", True)]),
             ], "⑦ 缓冲队列类反压：双方均按预算运行（对下标签＝引擎·预算态；左停读·右排空）")
         elif panel == "backpressure_release":
             _bp_panel(ax, con, [
