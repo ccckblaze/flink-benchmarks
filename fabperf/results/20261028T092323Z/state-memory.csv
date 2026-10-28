@@ -1,0 +1,3 @@
+"Benchmark","Mode","Threads","Samples","Score","Score Error (99.9%)","Unit","Param: stateBackend"
+"org.apache.flink.benchmark.MemoryStateBackendBenchmark.stateBackends","thrpt",1,7,3640.116290,94.478229,"ops/ms",MEMORY
+"org.apache.flink.benchmark.MemoryStateBackendBenchmark.stateBackends","thrpt",1,7,3404.389435,52.025639,"ops/ms",FS

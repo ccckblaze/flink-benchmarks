@@ -66,6 +66,19 @@ python3 fabperf/summarize.py fabperf/results/<RUN_ID>
 | `DATA_TMP` | `/mnt/datadisk0/fabperf/tmp` | RocksDB/临时文件放数据盘，避免污染系统盘 |
 | `ENV_ONLY` | `0` | 置 `1` 只写环境快照 |
 
+## 用例口径注记（读基线数字前必看）
+
+- `state-memory` / `state-rocks` 四腿（`MEMORY`/`FS`/`ROCKS`/`ROCKS_INC`）**不是在测状态访问成本**。
+  上游 `StateBackendBenchmarkBase` 把键空间写死为 `numberOfElements = 1000`，负载是
+  `reduceWithWindow(source, TumblingEventTimeWindows.of(10000s))`——窗口在测量窗口内永不触发，
+  迭代期间也没有检查点。1000 个 key 的 RocksDB 工作集全部命中 memtable/块缓存，
+  因此实测四腿挤在 3400–3640 ops/ms（最大相差 6.6%，落在 ±5% 噪声带边缘）。
+  结论：这一组度量的是 source→map→keyBy→window 的管道开销，后端选择几乎不影响结果。
+  要用它区分引擎的状态能力，必须**两侧同时**改大键空间并打开检查点，否则对比无意义。
+- `window` 四腿是有效区分项：`globalWindow` 5479、`tumblingWindow` 3631、
+  `slidingWindow` 583、`sessionWindow` 692 ops/ms（单核，Flink 2.3.0）。
+  滑动/会话窗口的成本来自每记录多窗格写入，是 Flinkable 侧必须复刻的语义点。
+
 ## 诚实性说明（写结论时必须带上）
 
 - **单核结论**：Stage 1 只测单核算子吞吐，不代表集群整体扩展性；多核/网络/反压另议。

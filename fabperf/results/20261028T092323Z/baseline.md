@@ -1,4 +1,4 @@
-# Flink Stage-1 baseline (flink-benchmarks JMH)
+# Flink 阶段一基线（flink-benchmarks JMH · 单核 · Flink 2.3.0）
 
 ## 测量环境（控制变量）
 
@@ -30,6 +30,20 @@
 | 内核命令行 | `BOOT_IMAGE=/boot/vmlinuz-7.0.0-30-generic root=UUID=f8351c6b-9739-4e8d-abfd-fdbd167938da ro splash=silent showopts crashkernel=0M-3G:0M,3G-8G:192M,8G-16G:256M,16G-64G:384M,64G-128G:512M,128G-486G:768M,486G-972G:1024M,972G-:2048M net.ifnames=0 biosdevname=0 console=ttyS0,115200 console=tty0 panic=5 intel_idle.max_cstate=1 intel_pstate=disable processor.max_cstate=1 amd_iommu=on iommu=pt spec_rstack_overflow=off` |
 
 ## 结果
+
+### state-memory
+
+| 用例 | 模式 | 迭代数 | 得分 | 误差 (99.9%) | 单位 |
+| --- | --- | --- | --- | --- | --- |
+| stateBackends.FS | thrpt | 7 | 3404 | 52.0 | ops/ms |
+| stateBackends.MEMORY | thrpt | 7 | 3640 | 94.5 | ops/ms |
+
+### state-rocks
+
+| 用例 | 模式 | 迭代数 | 得分 | 误差 (99.9%) | 单位 |
+| --- | --- | --- | --- | --- | --- |
+| stateBackends.ROCKS | thrpt | 7 | 3433 | 81.2 | ops/ms |
+| stateBackends.ROCKS_INC | thrpt | 7 | 3499 | 81.5 | ops/ms |
 
 ### window
 
