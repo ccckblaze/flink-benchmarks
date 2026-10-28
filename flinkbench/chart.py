@@ -166,14 +166,20 @@ def _bp_panel(ax, con, groups, title, no_legend=False, legend_below=False):
 
 
     peak_max, used = 0.0, set()
+    group_refused = {}
+    stacks = {}
     for g, (label, engines) in enumerate(groups):
         present = [(c, j) for (c, j) in engines if _has(con, c)]
+        stacks[g] = [(case, jvm, _bp_stacks(con, case, jvm)) for (case, jvm) in present]
+    group_ceil = {g: max([st[2] for _c, _j, st in v if st] + [0.0])
+                  for g, v in stacks.items()}
+    for g, (label, _engines) in enumerate(groups):
+        present = stacks[g]
         if not present:
             continue
         half = 0.8 / (2 * len(present))
         width = min(0.19, half * 0.92)
-        for i, (case, jvm) in enumerate(present):
-            st = _bp_stacks(con, case, jvm)
+        for i, (case, jvm, st) in enumerate(present):
             if st is None:
                 continue
             during, after_segs, peak, refused = st
@@ -194,9 +200,7 @@ def _bp_panel(ax, con, groups, title, no_legend=False, legend_below=False):
             ax.text(x0, peak - 3, "%.0f" % round(peak), ha="center", va="top",
                     fontsize=7, color="white")
             if refused is not None:
-                ax.text(x0, peak + 10, "拒绝 %d" % int(refused) if refused > 0
-                        else "拒绝 0", ha="center", fontsize=6.5,
-                        color=BP_BLUE if refused > 0 else BP_RED)
+                group_refused.setdefault(g, []).append(refused)
             top = sum(size for size, _c, _t in after_segs)
             bottom = 0.0
             for size, color, tag in after_segs:
@@ -225,6 +229,15 @@ def _bp_panel(ax, con, groups, title, no_legend=False, legend_below=False):
             peak_max = max(peak_max, peak)
     for g in range(1, len(groups)):
         ax.axvline(g - 0.5, color="#e2e2e2", lw=0.8, zorder=0)
+    # M157: one merged 拒绝 label per group (left bar / right bar order),
+    # above the group's tallest bar — per-bar labels collided horizontally.
+    present_n = {g: len(v) for g, v in stacks.items()}
+    for g, values in group_refused.items():
+        n = max(present_n.get(g, 1), 1)
+        center = g - 0.4 + 0.8 / 2.0
+        text = "拒绝 " + " · ".join(str(int(v)) for v in values)
+        ax.text(center, group_ceil[g] * 1.06, text, ha="center", fontsize=6.5,
+                color=BP_BLUE if any(values) else BP_RED)
     order = ["运行时基线", "Flinkable 内核", "CPython 解释器", "Python 库", "引擎积压",
              "预算封顶积压", "缓冲池占用", "零拷贝捕获", "持久化拷贝", "快照额外拷贝", "未回落残留"]
     handles = [Patch(color=c, label=t) for t in order for (tag, c) in used if tag == t]
@@ -232,13 +245,16 @@ def _bp_panel(ax, con, groups, title, no_legend=False, legend_below=False):
     ax.tick_params(axis="x", labelsize=6.5)
     ax.set_ylabel("进程常驻内存 RSS（MB，绝对值）", fontsize=8)
     ax.set_title(title + "\n（每对柱：左=停读峰值 · 右=排空终值；对下白框=所属引擎）",
-                 fontsize=8.5)
+                 fontsize=8.5, pad=40 if legend_below else 4)
     legend_corner = "upper right" if peak_max < 300 else "upper left"
     if legend_below:
-        # Cell-scale ⑦: an in-axes legend covers the 拒绝 annotations; hang it
-        # under the axis instead (the row has hspace to spare).
-        ax.legend(handles=handles, fontsize=6, loc="upper center",
-                  bbox_to_anchor=(0.5, -0.14), ncol=4, framealpha=0.95)
+        # M157: at cell width the under-axis legend collided with the shape
+        # tick labels; expand it above the axes (the title sits one line
+        # higher, so the band between title and axes is free).
+        ax.legend(handles=handles, fontsize=6, loc="lower left",
+                  bbox_to_anchor=(0.0, 1.005, 1.0, 0.16), mode="expand",
+                  ncol=4, framealpha=1.0, columnspacing=0.9, handlelength=1.2,
+                  handletextpad=0.4)
     elif not no_legend:
         ax.legend(handles=handles, fontsize=7, loc=legend_corner, ncol=2)
     ax.set_ylim(0, peak_max * 1.30)
@@ -443,21 +459,21 @@ def render(con, out_path, title):
                     if fab_py_split is not None:
                         totals[3] += fab_py_split[1] + fab_py_split[2]
                     ax.bar(cats, tops, 0.55, color=orange,
-                           label="JobManager（Java，三侧同源）")
+                           label="JobManager")
                     ax.bar(cats, mids, 0.55, bottom=tops, color=[GRAY, GRAY, BLUE],
-                           label="TaskManager（Flink Java / Flinkable）")
+                           label="TaskManager")
                     ax.bar(cats, bots, 0.55,
                            bottom=[t + m for t, m in zip(tops, mids)],
                            color=gold,
-                           label="Python 解释器（Flink 每槽位一进程 / Flinkable 嵌入 TM 进程内）")
+                           label="Python 解释器")
                     if fab_py_split is not None:
                         interp_share, libs_share, other_share = fab_py_split
                         light = "#c8ccd4"
                         top3 = tops[3] + mids[3] + interp_share
                         ax.bar([3], [libs_share], 0.55, bottom=[top3], color=orange,
-                               label="Python 库 pyarrow/pandas（同进程内）")
+                               label="Python 库")
                         ax.bar([3], [other_share], 0.55, bottom=[top3 + libs_share], color=light,
-                               label="其它 Python 开销（运行时/胶水）")
+                               label="其它 Python 开销")
                     for x, (t, m) in enumerate(zip(tops, mids)):
                         ax.annotate("JM %.0f" % t, (x, t / 2), ha="center", fontsize=8, color="white")
                         if x == 2:
@@ -513,17 +529,24 @@ def render(con, out_path, title):
                         lines.append("Python 作业：较 PyFlink −%.0f%%" % (100.0 * (1 - totals[3] / totals[1])))
                     else:
                         lines.append("较 PyFlink −%.0f%%" % (100.0 * (1 - totals[2] / totals[1])))
-                    ax.annotate("\n".join(lines), (2.62, max(totals) * 0.72),
-                        ha="center", va="center", fontsize=8.5, color=BLUE,
+                    ax.annotate("\n".join(lines), (0.02, max(totals) * 1.20),
+                        ha="left", va="top", fontsize=8.5, color=BLUE,
                         bbox=dict(boxstyle="round,pad=0.24", fc="white", ec="none", alpha=0.9))
                 else:
                     ax.annotate("总占用 −%.0f%%" % (100.0 * (1 - totals[1] / totals[0])),
                                 (0.5, max(totals) * 1.1), ha="center", fontsize=9, color=BLUE,
                                 bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
                 ax.set_ylabel("常驻内存 RSS（MB，越低越好）")
-                ax.set_title("④ 分布式部署内存（1 JM + 1 TM，WordCount 5.5 GB 运行中）", fontsize=9.5)
-                ax.legend(fontsize=7.5, loc="upper right")
-                ax.set_ylim(0, max(totals) * 1.28)
+                ax.set_title("④ 分布式部署内存（1 JM + 1 TM，WordCount 5.5 GB 运行中）",
+                             fontsize=9.5, pad=42)
+                # M157: legend above the axes with short labels — the long
+                # per-process descriptions collided in two columns at cell
+                # width (they live in the report table now).
+                ax.legend(fontsize=6.5, loc="lower left",
+                          bbox_to_anchor=(0.0, 1.005, 1.0, 0.16), mode="expand",
+                          ncol=5, framealpha=1.0, columnspacing=0.9,
+                          handlelength=1.2, handletextpad=0.4)
+                ax.set_ylim(0, max(totals) * 1.22)
             else:
                 jvm = _latest(con, "memory_engine_rss", "flink_jvm")[0]
                 native = _latest(con, "memory_engine_rss", "flinkable")[0]
@@ -677,7 +700,8 @@ def _draw_trend(fig, gs, row, trend):
     ax.set_xticks(xs, labels, fontsize=8)
     ax.set_ylabel("每记录耗时（纳秒，对数轴）")
     ax.set_title("⑨ 时间线趋势与回归标记（官方方法论核心视图：同一指标随摄取次序的走势）", fontsize=10)
-    # Legend above the axes: the end-of-line 改善/恶化 markers own the right margin.
-    ax.legend(fontsize=7.5, loc="lower left", bbox_to_anchor=(0.0, 1.01, 1.0, 0.22),
+    # M157: legend below the axes — above it collided with the panel title;
+    # the end-of-line 改善/恶化 markers stay clear in the right margin.
+    ax.legend(fontsize=7.5, loc="upper left", bbox_to_anchor=(0.0, -0.14, 1.0, 0.24),
               mode="expand", ncol=3, framealpha=1.0)
     ax.grid(axis="y", which="both", alpha=0.25)
