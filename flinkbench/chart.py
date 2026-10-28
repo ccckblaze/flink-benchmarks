@@ -90,7 +90,7 @@ def _bp_stacks(con, case, jvm):
         eng = float(_latest(con, "memory_embedded_python", "engine_base_mb")[0])
         interp_tot = float(_latest(con, "memory_embedded_python", "interp_total_mb")[0])
         libs_tot = float(_latest(con, "memory_embedded_python", "libs_total_mb")[0])
-        during = [(eng, BP_TEAL, "Rust 引擎"),
+        during = [(eng, BP_TEAL, "Flinkable 内核"),
                   (interp_tot - eng, BP_GOLD, "CPython 解释器"),
                   (libs_tot - interp_tot, BP_ORANGE, "Python 库"),
                   (max(base - libs_tot, 0.0), BP_PALE, "运行时基线"),
@@ -112,14 +112,24 @@ def _bp_stacks(con, case, jvm):
 
 
 def _bp_engine_tag(case, jvm):
-    """Short per-pair identity so adjacent bar pairs are distinguishable:
-    which engine does this pair belong to. Derived from the case name — the
-    only thing the reader cannot see from a colour alone."""
-    if case.endswith("_capped"):
-        return "封顶"
-    if jvm or case.endswith("_jvm"):
-        return "原版"
-    return "Rust"
+    """Compact per-pair identity so adjacent bar pairs are distinguishable:
+    engine (Flinkable / Flink) on the top line, buffer-budget state below.
+    Flink's network budget is mandatory, so its "未设预算" is the reserved-pool
+    proxy. The budget axis is dropped where it is not meaningful (capture /
+    python / park compare a different variable)."""
+    engine = "Flink" if (jvm or case.endswith("_jvm")) else "Flinkable"
+    if case in ("backpressure_capture", "backpressure_capture_jvm",
+                "backpressure_python", "backpressure_park", "backpressure_tcp_park"):
+        return engine
+    if case == "backpressure_reserved_jvm":
+        budget = "未设预算"
+    elif case.endswith("_capped"):
+        budget = "设预算"
+    elif jvm or case.endswith("_jvm"):
+        budget = "设预算"
+    else:
+        budget = "未设预算"
+    return engine + "\n" + budget
 
 
 def _bp_panel(ax, con, groups, title):
@@ -186,14 +196,14 @@ def _bp_panel(ax, con, groups, title):
             tag = _bp_engine_tag(case, jvm)
             ax.annotate(tag, (pair_mid, 0.0), xycoords=("data", "axes fraction"),
                         xytext=(0, 3), textcoords="offset points", ha="center", va="bottom",
-                        fontsize=7.5, fontweight="bold",
-                        color=BP_PURPLE if tag == "原版" else BLUE,
+                        fontsize=6.5, fontweight="bold",
+                        color=BP_PURPLE if (jvm or case.endswith("_jvm")) else BLUE,
                         bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="#bbb", lw=0.5,
                                   alpha=0.92))
             peak_max = max(peak_max, peak)
     for g in range(1, len(groups)):
         ax.axvline(g - 0.5, color="#e2e2e2", lw=0.8, zorder=0)
-    order = ["运行时基线", "Rust 引擎", "CPython 解释器", "Python 库", "引擎积压",
+    order = ["运行时基线", "Flinkable 内核", "CPython 解释器", "Python 库", "引擎积压",
              "预算封顶积压", "缓冲池占用", "零拷贝捕获", "持久化拷贝", "快照额外拷贝", "未回落残留"]
     handles = [Patch(color=c, label=t) for t in order for (tag, c) in used if tag == t]
     ax.set_xticks(range(len(groups)), [g[0] for g in groups])
@@ -252,13 +262,13 @@ def render(con, out_path, title):
             jvm = [_latest(con, c, "flink_jvm")[0] for c in cases]
             ratios = [_latest(con, c, "flink_over_flinkable") for c in cases]
             x = range(len(groups))
-            b1 = ax.bar([i - w / 2 for i in x], native, w, color=BLUE, label="flinkable（Rust 原生）")
-            b2 = ax.bar([i + w / 2 for i in x], jvm, w, color=GRAY, label="Apache Flink 原版（JVM）")
+            b1 = ax.bar([i - w / 2 for i in x], native, w, color=BLUE, label="Flinkable")
+            b2 = ax.bar([i + w / 2 for i in x], jvm, w, color=GRAY, label="Flink")
             _bar_labels(ax, list(b1) + list(b2))
             for i, ratio in enumerate(ratios):
                 if not ratio:
                     continue
-                word = "Rust 快 %.2f 倍" % ratio[0] if ratio[0] >= 1 else "Rust 慢 %.2f 倍" % (1 / ratio[0])
+                word = "Flinkable 快 %.2f 倍" % ratio[0] if ratio[0] >= 1 else "Flinkable 慢 %.2f 倍" % (1 / ratio[0])
                 # The empty column between the two bars, at the mean of their tops: a
                 # shared top row collides with the legend, a per-bar row with the value labels.
                 ax.annotate(word, (i, (native[i] + jvm[i]) / 2), ha="center", fontsize=9,
@@ -277,9 +287,9 @@ def render(con, out_path, title):
             ratios = [_latest(con, "smallbatch_" + b, "transfer_ratio")[0] for b in batches]
             x = range(len(batches))
             ax.bar([i - w / 2 for i in x], l2, w, color=BLUE,
-                   label="flinkable 引擎内零拷贝（Apache Arrow）")
+                   label="Flinkable 引擎内零拷贝（Apache Arrow）")
             ax.bar([i + w / 2 for i in x], l1, w, color=GRAY,
-                   label="原版 PyFlink 进程间通道（Apache Arrow IPC）")
+                   label="Flink PyFlink 进程间通道（Apache Arrow IPC）")
             ax.set_yscale("log")
             for i in x:
                 ax.annotate("%.1f×" % ratios[i], (i, max(l1[i], l2[i]) * 1.5), ha="center",
@@ -300,9 +310,9 @@ def render(con, out_path, title):
             ratios = [_latest(con, c, "end_to_end_ratio")[0] for c in cases]
             x = range(len(groups))
             ax.bar([i - w / 2 for i in x], l2, w, color=BLUE,
-                   label="flinkable（arrow-rs 内核，进程内零拷贝）")
+                   label="Flinkable（arrow-rs 内核，进程内零拷贝）")
             ax.bar([i + w / 2 for i in x], l1, w, color=GRAY,
-                   label="原版 PyFlink（pyarrow 内核，Arrow IPC 进程间）")
+                   label="Flink PyFlink（pyarrow 内核，Arrow IPC 进程间）")
             ax.set_yscale("log")
             _bar_labels(ax, [bar for container in ax.containers for bar in container], "{:.1f}")
             ax.annotate("端到端 %.2f 倍" % ratios[0], (0, l1[0] * 1.45), ha="center", fontsize=9, color=BLUE)
@@ -326,42 +336,56 @@ def render(con, out_path, title):
             jvm = [_latest(con, c, "flink_jvm")[0] for c, _g in specs]
             groups = [g for _c, g in specs]
             x = range(len(groups))
-            b2 = ax.bar([i - w / 2 for i in x], after, w, color=BLUE, label="flinkable（Rust 原生）")
-            b3 = ax.bar([i + w / 2 for i in x], jvm, w, color=GRAY, label="Apache Flink 原版（JVM）")
+            b2 = ax.bar([i - w / 2 for i in x], after, w, color=BLUE, label="Flinkable")
+            b3 = ax.bar([i + w / 2 for i in x], jvm, w, color=GRAY, label="Flink")
             _bar_labels(ax, list(b2) + list(b3))
             for i in x:
                 ratio = jvm[i] / after[i]
-                word = "Rust 快 %.2f 倍" % ratio if ratio >= 1 else "Rust 慢 %.2f 倍" % (1 / ratio)
+                word = "Flinkable 快 %.2f 倍" % ratio if ratio >= 1 else "Flinkable 慢 %.2f 倍" % (1 / ratio)
                 ax.annotate(word, (i, max(after[i], jvm[i]) * 1.16), ha="center", fontsize=9,
                             color=BLUE if ratio >= 1 else "#a33",
                             bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
             ax.set_xticks(list(x), groups)
             ax.tick_params(axis="x", labelsize=8)
             ax.set_ylabel("每记录往返耗时（纳秒，越低越好）")
-            ax.set_title("⑥ 非 ASCII 字符串编解码（与原版同会话并列）", fontsize=10)
+            ax.set_title("⑥ 非 ASCII 字符串编解码（与 Flink 同会话并列）", fontsize=10)
             ax.legend(fontsize=7.5, loc="upper right")
             ax.set_ylim(0, max(after + jvm) * 1.42)
         elif panel == "backpressure":
             _bp_panel(ax, con, [
-                ("网络通道停读\n（单通道）", [("backpressure_tcp_stall", False),
-                                   ("backpressure_tcp_stall_capped", False),
-                                   ("backpressure_tcp_stall_jvm", True)]),
-                ("任务间通道停读", [("backpressure_channel", False),
-                        ("backpressure_channel_capped", False)]),
-                ("广播扇出\n（一慢）", [("backpressure_broadcast", False),
-                             ("backpressure_broadcast_jvm", True)]),
-                ("数据倾斜\n（一热）", [("backpressure_skew", False),
-                             ("backpressure_skew_jvm", True)]),
-                ("多输入归并\n（一慢）", [("backpressure_union", False),
-                             ("backpressure_union_capped", False)]),
-            ], "⑦ 缓冲队列类反压：排空前 vs 排空后的绝对 RSS（左柱停读峰值 · 右柱排空终值）")
+                # Control-variable framing: inside each shape the pairs are held
+                # to the SAME buffer-budget axis, so a Flinkable bar is only ever
+                # read against a Flink bar configured the same way. The network
+                # shape carries the full 2×2 (both engines × both budget states);
+                # broadcast/skew add the Flinkable·设预算 leg so they become a
+                # capped-vs-capped comparison; channel/union are Flinkable-internal
+                # edges with no Flink counterpart and say so.
+                ("网络通道停读\n（2×2：引擎×预算）", [
+                    ("backpressure_tcp_stall", False),
+                    ("backpressure_tcp_stall_capped", False),
+                    ("backpressure_tcp_stall_jvm", True),
+                    ("backpressure_reserved_jvm", True)]),
+                ("广播扇出·一慢", [
+                    ("backpressure_broadcast", False),
+                    ("backpressure_broadcast_capped", False),
+                    ("backpressure_broadcast_jvm", True)]),
+                ("数据倾斜·一热", [
+                    ("backpressure_skew", False),
+                    ("backpressure_skew_capped", False),
+                    ("backpressure_skew_jvm", True)]),
+                ("任务间通道停读\n（Flinkable 内部边）", [
+                    ("backpressure_channel", False),
+                    ("backpressure_channel_capped", False)]),
+                ("多输入归并·一慢\n（Flinkable 内部边）", [
+                    ("backpressure_union", False),
+                    ("backpressure_union_capped", False)]),
+            ], "⑦ 缓冲队列类反压：同形状内按预算态配平（对下标签＝引擎·预算态；左停读·右排空）")
         elif panel == "backpressure_release":
             _bp_panel(ax, con, [
                 ("非对齐检查点\n（在途数据快照）", [("backpressure_capture", False),
                                         ("backpressure_capture_jvm", True)]),
-                ("Python 算子停读\n（嵌入式）", [("backpressure_python", False)]),
-                ("网络通道停读\n（原版池预留全场景）", [("backpressure_reserved_jvm", True)]),
-            ], "⑧ 检查点、Python 算子与原版预留对照：排空前 vs 排空后的绝对 RSS")
+                ("Python 算子停读\n（Flinkable 嵌入式）", [("backpressure_python", False)]),
+            ], "⑧ 检查点与 Python 算子：排空前 vs 排空后的绝对 RSS")
         elif panel == "memory":
             if _has(con, "memory_jm_rss"):
                 # M131: the standardized distributed deployment — one JobManager plus one
@@ -388,9 +412,9 @@ def render(con, out_path, title):
                     jm_py = _latest(con, "memory_jm_rss", "flink_pyflink")[0]
                     tm_py = _latest(con, "memory_tm_rss", "flink_pyflink")[0]
                     py_py = _latest(con, "memory_py_rss", "flink_pyflink")[0]
-                    cats = ["Apache Flink 原版", "原版 PyFlink", "flinkable\n（Java 作业）",
-                            "flinkable\n（Python 作业）"] if has_fab_py else \
-                           ["Apache Flink 原版", "原版 PyFlink", "flinkable"]
+                    cats = ["Flink", "Flink PyFlink", "Flinkable\n（Java 作业）",
+                            "Flinkable\n（Python 作业）"] if has_fab_py else \
+                           ["Flink", "Flink PyFlink", "Flinkable"]
                     tops = [jm_jvm, jm_py, jm_fab] + ([jm_fab] if has_fab_py else [])
                     mids = [tm_jvm, tm_py, tm_fab] + ([tm_fab_py] if has_fab_py else [])
                     bots = [0.0, py_py, 0.0] + ([0.0] if has_fab_py else [])
@@ -416,11 +440,11 @@ def render(con, out_path, title):
                     ax.bar(cats, tops, 0.55, color=orange,
                            label="JobManager（Java，三侧同源）")
                     ax.bar(cats, mids, 0.55, bottom=tops, color=[GRAY, GRAY, BLUE],
-                           label="TaskManager（Java / Rust）")
+                           label="TaskManager（Flink Java / Flinkable）")
                     ax.bar(cats, bots, 0.55,
                            bottom=[t + m for t, m in zip(tops, mids)],
                            color=gold,
-                           label="Python 解释器（原版每槽位一进程 / flinkable 嵌入 TM 进程内）")
+                           label="Python 解释器（Flink 每槽位一进程 / Flinkable 嵌入 TM 进程内）")
                     if fab_py_split is not None:
                         interp_share, libs_share, other_share = fab_py_split
                         light = "#c8ccd4"
@@ -437,7 +461,7 @@ def render(con, out_path, title):
                                         ha="left", fontsize=8, color=BLUE,
                                         arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
                         elif x == 3 and fab_py_split is not None:
-                            ax.annotate("Rust 引擎 %.1f" % m, (x, t + m),
+                            ax.annotate("Flinkable 内核 %.1f" % m, (x, t + m),
                                         xytext=(28, 14), textcoords="offset points",
                                         ha="left", fontsize=8, color=BLUE,
                                         arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
@@ -479,7 +503,7 @@ def render(con, out_path, title):
                     ax.annotate("%.0f MB" % tot, (x, tot * 1.015), ha="center", fontsize=9)
                 if has_py:
                     lines = ["总占用",
-                             "Java 作业：较原版 −%.0f%%" % (100.0 * (1 - totals[2] / totals[0]))]
+                             "Java 作业：较 Flink −%.0f%%" % (100.0 * (1 - totals[2] / totals[0]))]
                     if has_fab_py:
                         lines.append("Python 作业：较 PyFlink −%.0f%%" % (100.0 * (1 - totals[3] / totals[1])))
                     else:
@@ -498,7 +522,7 @@ def render(con, out_path, title):
             else:
                 jvm = _latest(con, "memory_engine_rss", "flink_jvm")[0]
                 native = _latest(con, "memory_engine_rss", "flinkable")[0]
-                ax.barh(["原版（JVM）", "flinkable"], [jvm, native], color=[GRAY, BLUE])
+                ax.barh(["Flink", "Flinkable"], [jvm, native], color=[GRAY, BLUE])
                 ax.set_xlabel("引擎侧常驻内存 RSS 峰值（MB）")
                 ax.annotate("−%.0f%%（微基准口径）" % (100.0 * (1 - native / jvm)),
                             (native * 1.8, 1), fontsize=8, color=BLUE)
@@ -513,13 +537,13 @@ def render(con, out_path, title):
             enc = _latest(con, "bulk4_framing", "flink_enc")[0]
             dec = _latest(con, "bulk4_framing", "flink_dec")[0]
             py = _latest(con, "framing_coder", "pyflink")[0]
-            b1 = ax.bar([-w / 2], [total], w, color=BLUE, label="flinkable（arrow-rs 编码/解码）")
-            b2 = ax.bar([w / 2], [py], w, color=GRAY, label="原版 PyFlink（pyarrow ArrowCoder）")
+            b1 = ax.bar([-w / 2], [total], w, color=BLUE, label="Flinkable（arrow-rs 编码/解码）")
+            b2 = ax.bar([w / 2], [py], w, color=GRAY, label="Flink PyFlink（pyarrow ArrowCoder）")
             _bar_labels(ax, list(b1) + list(b2), "{:.1f}")
             ax.annotate("编码 %.1f + 解码 %.1f" % (enc, dec), (-w / 2, total * 0.45),
                         ha="center", fontsize=8, color="white")
             ratio = py / total
-            word = "Rust 快 %.2f 倍" % ratio if ratio >= 1 else "Rust 慢 %.2f 倍" % (1 / ratio)
+            word = "Flinkable 快 %.2f 倍" % ratio if ratio >= 1 else "Flinkable 慢 %.2f 倍" % (1 / ratio)
             ax.annotate(word, (0, (total + py) / 2), ha="center", fontsize=9,
                         color=BLUE if ratio >= 1 else "#a33",
                         bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
@@ -567,12 +591,12 @@ def render(con, out_path, title):
 TREND_SERIES = [
     # Every flinkable series carries a same-colour original-Flink (JVM)
     # reference line: dashed = reference (no point labels, no delta arrow).
-    ("serde_string", "flinkable", "字符串 flinkable", BLUE, "o", "-"),
-    ("serde_string", "flink_jvm", "字符串 原版（JVM）", GRAY, "s", "-"),
-    ("serde_int_long", "flinkable", "定长字段 flinkable", "#2e9e57", "^", "-"),
-    ("serde_int_long", "flink_jvm", "定长字段 原版（JVM）", "#2e9e57", "s", "--"),
-    ("serde_string_full", "flinkable", "字符串全链条 flinkable", "#7a5cc4", "D", "-"),
-    ("serde_string_full", "flink_jvm", "字符串全链条 原版（JVM）", "#7a5cc4", "s", "--"),
+    ("serde_string", "flinkable", "字符串 Flinkable", BLUE, "o", "-"),
+    ("serde_string", "flink_jvm", "字符串 Flink", GRAY, "s", "-"),
+    ("serde_int_long", "flinkable", "定长字段 Flinkable", "#2e9e57", "^", "-"),
+    ("serde_int_long", "flink_jvm", "定长字段 Flink", "#2e9e57", "s", "--"),
+    ("serde_string_full", "flinkable", "字符串全链条 Flinkable", "#7a5cc4", "D", "-"),
+    ("serde_string_full", "flink_jvm", "字符串全链条 Flink", "#7a5cc4", "s", "--"),
 ]
 
 

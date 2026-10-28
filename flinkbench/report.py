@@ -82,7 +82,7 @@ def generate(con, out_dir, title, env_lines):
             arrow = "越低越好" if direction == "lower_is_better" else "越高越好"
             lines.append("| %s | %s | %.4g %s | %s |" % (
                 case_label(case), metric_label(metric), value, unit_label(unit), arrow))
-    lines += ["", "## 非 ASCII 字符串全链条（与原版同会话、同形状、同纪律并列）", ""]
+    lines += ["", "## 非 ASCII 字符串全链条（与 Flink 同会话、同形状、同纪律并列）", ""]
     canonical = [("serde_shape_cjk10", "中文 10 字"),
                  ("serde_shape_cjk40", "中文 40 字"),
                  ("serde_shape_mixed", "中英混排 + emoji")]
@@ -90,13 +90,13 @@ def generate(con, out_dir, title, env_lines):
                    _value(con, case, "flink_over_flinkable"))
                   for case, label in canonical if _has_case(con, case)]
     if canon_rows:
-        lines += ["| 形状 | flinkable（Rust 原生） | Apache Flink 原版（JVM） | 原版/flinkable |",
+        lines += ["| 形状 | Flinkable | Flink | Flink/Flinkable |",
                   "| --- | --- | --- | --- |"]
         for label, native, jvm, ratio in canon_rows:
             lines.append("| %s | %.0f 纳秒/记录 | %.0f 纳秒/记录 | %.2f 倍 |" % (
                 label, native, jvm, ratio))
         lines += ["", "口径：整条链（值构造 + 编码 + 解码）每记录往返耗时，纳秒/记录；两腿取自同一次"
-                      "跨引擎对表运行，Rust 腿为池化批形制（生产形态），JVM 腿为 Flink"
+                      "跨引擎对表运行，Flinkable 腿为池化批形制（生产形态），Flink 腿为"
                       " `StringSerializer` 经 `DataOutputSerializer`/`DataInputDeserializer` 的完整往返。"]
     lines += ["", "## 编解码通道改造前后（同一二进制内的 A/B 腿）", ""]
     shape_specs = [("ab_encode_cjk_8", "ab_decode_cjk_8", "中文 10 字"),
@@ -131,21 +131,26 @@ def generate(con, out_dir, title, env_lines):
         return row[0] if row else None
 
     bp_matrix = [
-        ("网络通道停读（单通道）", "flinkable", "backpressure_tcp_stall"),
-        ("网络通道停读（单通道）", "flinkable（预算封顶）", "backpressure_tcp_stall_capped"),
-        ("网络通道停读（单通道）", "原版 Flink（池按预算封顶）", "backpressure_tcp_stall_jvm"),
-        ("网络通道停读（单通道）", "原版 Flink（池预留全场景）", "backpressure_reserved_jvm"),
-        ("广播扇出（一慢）", "flinkable", "backpressure_broadcast"),
-        ("广播扇出（一慢）", "原版 Flink（每通道配额）", "backpressure_broadcast_jvm"),
-        ("数据倾斜（一热）", "flinkable", "backpressure_skew"),
-        ("数据倾斜（一热）", "原版 Flink（每通道配额）", "backpressure_skew_jvm"),
-        ("多输入归并（一慢）", "flinkable", "backpressure_union"),
-        ("多输入归并（一慢）", "flinkable（预算封顶）", "backpressure_union_capped"),
-        ("非对齐检查点 × 在途数据", "flinkable", "backpressure_capture"),
-        ("非对齐检查点 × 在途数据", "原版 Flink", "backpressure_capture_jvm"),
-        ("任务间通道停读", "flinkable", "backpressure_channel"),
-        ("任务间通道停读", "flinkable（预算封顶）", "backpressure_channel_capped"),
-        ("Python 算子停读（嵌入式）", "flinkable", "backpressure_python"),
+        # Engine column unified to Flinkable / Flink; the budget state is spelled
+        # out so the reader can pair like-for-like (control variables). Flink's
+        # "未设预算" is the reserved-pool proxy (its budget is mandatory).
+        ("网络通道停读", "Flinkable·未设预算", "backpressure_tcp_stall"),
+        ("网络通道停读", "Flinkable·设预算", "backpressure_tcp_stall_capped"),
+        ("网络通道停读", "Flink·设预算", "backpressure_tcp_stall_jvm"),
+        ("网络通道停读", "Flink·未设预算（预留全场景）", "backpressure_reserved_jvm"),
+        ("广播扇出·一慢", "Flinkable·未设预算", "backpressure_broadcast"),
+        ("广播扇出·一慢", "Flinkable·设预算", "backpressure_broadcast_capped"),
+        ("广播扇出·一慢", "Flink·设预算", "backpressure_broadcast_jvm"),
+        ("数据倾斜·一热", "Flinkable·未设预算", "backpressure_skew"),
+        ("数据倾斜·一热", "Flinkable·设预算", "backpressure_skew_capped"),
+        ("数据倾斜·一热", "Flink·设预算", "backpressure_skew_jvm"),
+        ("多输入归并·一慢（Flinkable 内部边）", "Flinkable·未设预算", "backpressure_union"),
+        ("多输入归并·一慢（Flinkable 内部边）", "Flinkable·设预算", "backpressure_union_capped"),
+        ("任务间通道停读（Flinkable 内部边）", "Flinkable·未设预算", "backpressure_channel"),
+        ("任务间通道停读（Flinkable 内部边）", "Flinkable·设预算", "backpressure_channel_capped"),
+        ("非对齐检查点在途快照", "Flinkable", "backpressure_capture"),
+        ("非对齐检查点在途快照", "Flink", "backpressure_capture_jvm"),
+        ("Python 算子停读（嵌入式）", "Flinkable", "backpressure_python"),
     ]
     bp_rows = []
     for shape, engine, case in bp_matrix:
@@ -173,7 +178,7 @@ def generate(con, out_dir, title, env_lines):
                 cell(copy_mb), "—" if refused is None else "%d 次" % int(refused)))
         interp_note = ""
         if _has_case(con, "memory_embedded_python"):
-            interp_note = ("嵌入式 Python 的构成（同会话探针，`RSS|embed`）：Rust 引擎基线 %.1f MB → "
+            interp_note = ("嵌入式 Python 的构成（同会话探针，`RSS|embed`）：Flinkable 内核基线 %.1f MB → "
                            "CPython 解释器 %.1f MB → pyarrow/pandas 库 %.1f MB → 在途 Arrow 批 %.1f MB；"
                            "Python 算子停读行的色块即按此拆分。" % (
                                _maybe(con, "memory_embedded_python", "engine_base_mb"),
@@ -184,20 +189,26 @@ def generate(con, out_dir, title, env_lines):
                                _maybe(con, "memory_embedded_python", "batch_total_mb")
                                - _maybe(con, "memory_embedded_python", "libs_total_mb")))
         lines += ["", "口径：全部为**同一进程的绝对常驻内存 RSS**（`/proc/self/statm`），三段采样——停读前基线、"
-                      "停读期间峰值、恢复排空后终值；不再报告增量。原版对照腿在**独立 JVM 进程**逐场景运行，"
-                      "基线互不污染。要点：原版“反压时内存涨得快”发生在**构造期预留**（缓冲池一次性握段），"
+                      "停读期间峰值、恢复排空后终值；不再报告增量。Flink 对照腿在**独立 JVM 进程**逐场景运行，"
+                      "基线互不污染。要点：Flink“反压时内存涨得快”发生在**构造期预留**（缓冲池一次性握段），"
                       "“回收慢甚至不回收”是**池化复用**（段不回 OS，全程 GC 仅 2–3 次），均非 GC 问题；"
                       "每通道配额（`maxBuffersPerChannel`）使一慢/一热被封顶在 2 MB 级，拒绝 1984 次。"
-                      "M149 已为 flinkable 补上同形信号：任务间通道（Exchange）与网络 shuffle 均有生产者"
-                      "侧预算封顶（`with_budget`/`try_produce`），三形状拒绝 8128/8128/1984 次与原版对照腿"
+                      "M149 已为 Flinkable 补上同形信号：任务间通道（Exchange）与网络 shuffle 均有生产者"
+                      "侧预算封顶（`with_budget`/`try_produce`），三形状拒绝 8128/8128/1984 次与 Flink 对照腿"
                       "一致，RSS 仅 +2 MB 级且排空后全部回落基线——无界积压与残留两个缺口关闭。"
                       "M150 进一步：①非对齐快照的 in-flight 数据改为 `bytes::Bytes` 引用计数共享，"
                       "持久化拷贝从 64 MB 归零——capture 峰值由 2×（131.3）回落到 1×+0.1（67.3），"
-                      "与原版 BufferConsumer 共享同一段内存完全同形；②预算满时生产者不再只是被拒，"
+                      "与 Flink BufferConsumer 共享同一段内存完全同形；②预算满时生产者不再只是被拒，"
                       "而是在 emit 内**阻塞停读**（`push_blocking`，忠实 `requestBufferBuilderBlocking`），"
                       "腾出预算后 44µs 唤醒、停读期间 RSS 持平基线——一个满队列就此逐级回传为端到端反压。"
                       "未封顶形状排空后 RSS 是否回落取决于分配器能否归还"
-                      "连续空闲块（归并/广播回落，停读/倾斜部分保留），属碎片而非泄漏。" + interp_note]
+                      "连续空闲块（归并/广播回落，停读/倾斜部分保留），属碎片而非泄漏。"
+                      "**控制变量（M152）**：Flink 的网络缓冲预算是强制的，没有真正的“未设预算”，"
+                      "其“未设预算”即预留到能吞下全场景的代理；故跨引擎对照一律**同为“设预算”**才公平——"
+                      "广播/倾斜已补 Flinkable·设预算 腿（每通道 16 段、全局 64 段，与 Flink `maxBuffersPerChannel`"
+                      "同配额），封顶后热通道 0.5 MB、RSS 5.3/4.7 MB，与 Flink·设预算 的 83/84 MB 同口径可比；"
+                      "网络形状给出完整 2×2（两引擎×两预算态）。任务间通道/多输入归并为 Flinkable 进程内边，"
+                      "Flink 无对应，单列不参与跨引擎配平。" + interp_note]
 
     # M151: end-to-end backpressure — the producer-side park, priced for both
     # the in-process edge and the network data plane. These are latency/flatness
