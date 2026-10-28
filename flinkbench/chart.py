@@ -442,9 +442,9 @@ def render(con, out_path, title):
                     # Flinkable Java job) and the Python pair (PyFlink vs
                     # Flinkable Python job) sit next to each other so each
                     # delta is read inside its own workload group.
-                    cats = ["Flink\n（Java 作业）", "Flinkable\n（Java 作业）",
-                            "Flink\n（PyFlink 作业）", "Flinkable\n（Python 作业）"] if has_fab_py else \
-                           ["Flink\n（Java 作业）", "Flinkable\n（Java 作业）", "Flink\n（PyFlink 作业）"]
+                    cats = ["Flink\n（Java）", "Flinkable\n（Java）",
+                            "Flink\n（PyFlink）", "Flinkable\n（Python）"] if has_fab_py else \
+                           ["Flink\n（Java）", "Flinkable\n（Java）", "Flink\n（PyFlink）"]
                     tops = [jm_jvm, jm_fab] + ([jm_py, jm_fab] if has_fab_py else [jm_py])
                     mids = [tm_jvm, tm_fab] + ([tm_py, tm_fab_py] if has_fab_py else [tm_py])
                     bots = [0.0, 0.0] + ([py_py, 0.0] if has_fab_py else [py_py])
