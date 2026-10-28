@@ -191,8 +191,11 @@ def generate(con, out_dir, title, env_lines):
                       "M149 已为 flinkable 补上同形信号：任务间通道（Exchange）与网络 shuffle 均有生产者"
                       "侧预算封顶（`with_budget`/`try_produce`），三形状拒绝 8128/8128/1984 次与原版对照腿"
                       "一致，RSS 仅 +2 MB 级且排空后全部回落基线——无界积压与残留两个缺口关闭。"
-                      "非对齐检查点拆为两段：零拷贝捕获（peek）仅 +0.1 MB，与原版 BufferConsumer 共享语义"
-                      "同形；64 MB 来自持久化字节克隆（原版≈0），流式落盘在后续里程碑处理；"
+                      "M150 进一步：①非对齐快照的 in-flight 数据改为 `bytes::Bytes` 引用计数共享，"
+                      "持久化拷贝从 64 MB 归零——capture 峰值由 2×（131.3）回落到 1×+0.1（67.3），"
+                      "与原版 BufferConsumer 共享同一段内存完全同形；②预算满时生产者不再只是被拒，"
+                      "而是在 emit 内**阻塞停读**（`push_blocking`，忠实 `requestBufferBuilderBlocking`），"
+                      "腾出预算后 44µs 唤醒、停读期间 RSS 持平基线——一个满队列就此逐级回传为端到端反压。"
                       "未封顶形状排空后 RSS 是否回落取决于分配器能否归还"
                       "连续空闲块（归并/广播回落，停读/倾斜部分保留），属碎片而非泄漏。" + interp_note]
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]

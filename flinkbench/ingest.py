@@ -260,6 +260,12 @@ MEASURED_PATTERNS = [
     (r"BP\|capture_release\|residual_mb=([\d.]+)\|rss_after_mb=([\d.]+)",
      lambda m: [("backpressure_capture", "residual_mb", m[0], "MB", LB),
                 ("backpressure_capture", "rss_after_mb", m[1], "MB", LB)]),
+    # M150: a parked producer — wake latency after a drain frees budget, and the
+    # flat RSS while it stalls (the record stays in the producer, not the queue).
+    (r"BP\|park\|rounds=\d+\|size=\d+\|wake_ns=([\d.]+)\|parked_ns=([\d.]+)\|rss_parked_mb=([\d.]+)",
+     lambda m: [("backpressure_park", "wake_ns", m[0], "ns", LB),
+                ("backpressure_park", "parked_ns", m[1], "ns", LB),
+                ("backpressure_park", "rss_parked_mb", m[2], "MB", LB)]),
     (r"BP\|exchange\|records=\d+\|size=\d+\|accepted=\d+\|refused=(\d+)\|queued_mb=([\d.]+)\|push_ns=([\d.]+)\|rss_base_mb=([\d.]+)\|rss_mb=([\d.]+)",
      lambda m: [("backpressure_channel", "refused", m[0], "records", LB),
                 ("backpressure_channel", "backlog_mb", m[1], "MB", LB),
