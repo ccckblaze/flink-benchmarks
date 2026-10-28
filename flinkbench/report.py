@@ -21,6 +21,7 @@ Layout mirrors what a flink-benchmarks Codespeed page tells you per benchmark
 same-screen chart embedded. Terminology always goes through `terms.py`.
 """
 
+import json
 import os
 import re
 
@@ -31,6 +32,15 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 STAGE1_DISCIPLINE = ("`taskset` 绑核 cpu0 · 关闭同物理核超线程（SMT）兄弟核 · 7 迭代 × 20 s · "
                      "Xmx4g · ActiveProcessorCount=1 · glibc 分配器 · Flink 2.3.0")
+
+# What each official state leg declares versus what it was found to run. The
+# MEMORY leg's label happens to be true, so it needs no caveat; the other three
+# would assert a backend or a checkpoint storage the measurement disproves.
+DEAD_CONFIG_STATE_CAVEATS = {
+    "stateBackends.FS": "声明值；检查点存储未生效，实为 JobManager 存储",
+    "stateBackends.ROCKS": "声明值；实测为 HashMapStateBackend",
+    "stateBackends.ROCKS_INC": "声明值；实测为 HashMapStateBackend",
+}
 
 STAGE1_ORDER = [
     "globalWindow", "tumblingWindow", "slidingWindow", "sessionWindow",
@@ -146,7 +156,19 @@ def _clock_calibration(con):
     except OSError:
         return None, None
     match = re.search(r"\bghz=([\d.]+)", text)
-    return (float(match.group(1)), path) if match else (None, None)
+    if not match:
+        return None, None
+    calib = {"ghz": float(match.group(1))}
+    # The advertised frequency is kept beside the measured one so the figure can
+    # say how far off a nominal-clock conversion would have been; on this class
+    # of cloud host the two differ by about a fifth.
+    env_path = os.path.join(os.path.dirname(path), "env.json")
+    try:
+        with open(env_path) as handle:
+            calib["nominal_mhz"] = float(json.load(handle).get("cpu_mhz") or 0) or None
+    except (OSError, ValueError):
+        pass
+    return calib, path
 
 
 def _stage1_run_note(con):
@@ -353,15 +375,25 @@ def generate(con, out_dir, title, env_lines):
         lines += ["",
                   "| 用例（文档原名） | Flink 基线 | 误差 (99.9%) | Flinkable 同形腿 |",
                   "| --- | --- | --- | --- |"]
+        # The sweep cases get their own section with the backend actually
+        # switched; repeating them here as bare "Flink 基线" rows would drop the
+        # one thing that makes them readable.
+        from .terms import KEYED_STATE_CASES
+        sweep = set(KEYED_STATE_CASES)
         for case in [c for c in STAGE1_ORDER if c in stage1] + sorted(
-                stage1 - set(STAGE1_ORDER)):
+                stage1 - set(STAGE1_ORDER) - sweep):
             score = chart._latest(con, case, "score")
             if score is None:
                 continue
             err = chart._latest(con, case, "error")
             scale = chart.UNIT_TO_MOPS.get(score[1], 1.0)
+            label = case_label(case)
+            if case in DEAD_CONFIG_STATE_CAVEATS:
+                # Naming these rows after the backend they declare would assert
+                # something the measurement disproves.
+                label += "（%s）" % DEAD_CONFIG_STATE_CAVEATS[case]
             lines.append("| %s | %.2f | ±%.2f | 待补 |" % (
-                case_label(case), score[0] * scale,
+                label, score[0] * scale,
                 0.0 if err is None else err[0] * scale))
         lines += ["", "命名口径：窗口名取 `docs/dev/datastream/operators/windows.md` 的窗口分配器"
                       "（Tumbling / Sliding / Session / Global Windows）；状态后端与检查点存储取"
@@ -397,10 +429,11 @@ def generate(con, out_dir, title, env_lines):
                   "`RocksStateBackendBenchmark` 用 2\,000\,000 条，两组之间本身也不可比较。"]
         keyed = chart.keyed_state_series(con)
         if keyed:
+            calib, _calib_path = _clock_calibration(con)
             keyed_png = chart.render_keyed_state(
                 con, os.path.join(out_dir, "keyed_state.png"),
-                run_note=_stage1_run_note(con))
-            ghz, ghz_path = _clock_calibration(con)
+                run_note=_stage1_run_note(con), calib=calib)
+            ghz = calib["ghz"] if calib else None
             lines += ["", "## 阶段一（修正）：键基数扫描与状态后端真实切换", ""]
             if keyed_png:
                 lines += ["![键基数扫描（修正组）](%s)" % os.path.basename(keyed_png), ""]

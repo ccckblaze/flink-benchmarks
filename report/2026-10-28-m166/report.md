@@ -387,17 +387,9 @@
 | 滑动窗口（Sliding Windows） | 0.62 | ±0.01 | 待补 |
 | 会话窗口（Session Windows） | 0.69 | ±0.03 | 待补 |
 | HashMapStateBackend + JobManagerCheckpointStorage | 3.64 | ±0.09 | 待补 |
-| HashMapStateBackend + FileSystemCheckpointStorage | 3.40 | ±0.05 | 待补 |
-| EmbeddedRocksDBStateBackend + 全量检查点（full checkpoints） | 3.43 | ±0.08 | 待补 |
-| EmbeddedRocksDBStateBackend + 增量检查点（Incremental Checkpoints） | 3.50 | ±0.08 | 待补 |
-| HashMapStateBackend（键基数 1） | 4.19 | ±0.17 | 待补 |
-| EmbeddedRocksDBStateBackend（键基数 1） | 0.49 | ±0.01 | 待补 |
-| HashMapStateBackend（键基数 1 千） | 3.45 | ±0.10 | 待补 |
-| EmbeddedRocksDBStateBackend（键基数 1 千） | 0.29 | ±0.01 | 待补 |
-| HashMapStateBackend（键基数 10 万） | 1.25 | ±0.04 | 待补 |
-| EmbeddedRocksDBStateBackend（键基数 10 万） | 0.15 | ±0.00 | 待补 |
-| HashMapStateBackend（键基数 100 万） | 0.55 | ±0.02 | 待补 |
-| EmbeddedRocksDBStateBackend（键基数 100 万） | 0.08 | ±0.00 | 待补 |
+| HashMapStateBackend + FileSystemCheckpointStorage（声明值；检查点存储未生效，实为 JobManager 存储） | 3.40 | ±0.05 | 待补 |
+| EmbeddedRocksDBStateBackend + 全量检查点（full checkpoints）（声明值；实测为 HashMapStateBackend） | 3.43 | ±0.08 | 待补 |
+| EmbeddedRocksDBStateBackend + 增量检查点（Incremental Checkpoints）（声明值；实测为 HashMapStateBackend） | 3.50 | ±0.08 | 待补 |
 
 命名口径：窗口名取 `docs/dev/datastream/operators/windows.md` 的窗口分配器（Tumbling / Sliding / Session / Global Windows）；状态后端与检查点存储取 `docs/ops/state/state_backends.md`、`docs/ops/state/checkpoints.md` 的 `HashMapStateBackend` / `EmbeddedRocksDBStateBackend` / `JobManagerCheckpointStorage` / `FileSystemCheckpointStorage` 与 *Incremental Checkpoints*；单位按提案 §3.3 折算为 Mops/s（JMH 原生报 ops/ms，1 ops/ms = 1000 ops/s）。
 

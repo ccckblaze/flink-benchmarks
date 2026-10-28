@@ -45,6 +45,26 @@ def _latest(con, case, metric):
     return row
 
 
+def _fill(text, values):
+    """Substitute {token} placeholders without str.format's brace fragility.
+
+    The on-chart notes quote measured numbers, so they are filled from the
+    store rather than written into the string: a hard-coded figure in a panel
+    heading silently went stale the last time the baseline was re-run.
+    """
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", value)
+    return text
+
+
+def _jmh_history(con, case, limit=2):
+    """The last `limit` scores for a stage-1 case, newest first."""
+    return [row[0] for row in con.execute(
+        """SELECT m.value FROM metrics m JOIN runs r ON r.id = m.run_id
+           WHERE m.case_name = ? AND m.metric = 'score' AND r.suite = 'jmh'
+           ORDER BY r.ts DESC, r.id DESC LIMIT ?""", (case, limit))]
+
+
 def _has(con, case):
     return con.execute("SELECT 1 FROM metrics WHERE case_name = ? LIMIT 1", (case,)).fetchone() is not None
 
@@ -710,11 +730,17 @@ STAGE1_GROUPS = [
     ("状态后端与检查点存储｜四腿实为同一后端，不构成对比（见修正组）",
      ["stateBackends.MEMORY", "stateBackends.FS", "stateBackends.ROCKS",
       "stateBackends.ROCKS_INC"], GRAY,
-     "上游 StateBackendBenchmarkBase 构造的 Configuration 从未被应用，且集群配置被强制\n"
-     "state.backend=hashmap；后端解析又只在作业图携带检查点设置时才发生。四腿因此从头到尾\n"
-     "都是同一后端，量的是 source→map→keyBy→window 管道。本 fork 已在修正组完成真正的\n"
-     "后端切换与键基数放大，见「键基数扫描」图。"),
+     "读图提示：这四条全都跑在 HashMapStateBackend 上，不是四种后端。\n"
+     "上游构造的 Configuration 从未被应用，后端解析又只在作业图\n"
+     "携带检查点设置时才发生，所以 state.backend=rocksdb 是死配置。\n"
+     "官方 ROCKS 腿读数 {official_rocks} ops/ms，"
+     + "{rocks_note}\n"
+     "真正的后端对比请看「键基数扫描」图。"),
 ]
+
+DEFAULT_STAGE1_NOTE = (
+    "Flinkable 同形腿：待补（提案 §2 P-A：`fab-windows` 窗口分配器、类型化记录通路）\n"
+    "{window_repro}")
 
 # What the proposal asks for in section 3.3, and whether this box can deliver it.
 # No ✓/✗ here on purpose: PingFang SC has no U+2713/U+2717 and they render as tofu.
@@ -761,7 +787,32 @@ def render_stage1(con, out_path, run_note=""):
         if score:
             window_values.append(score[0])
     spread = ("%.1f" % (max(window_values) / min(window_values))) if window_values else "—"
-    drawn = [(heading.format(window_spread=spread), wanted, color, warning)
+
+    # Human caveats, computed from the store so they cannot drift from the bars.
+    fastest = STAGE1_GROUPS[0][1][0]
+    history = _jmh_history(con, fastest, 2)
+    if len(history) == 2 and min(history) > 0:
+        repro = ("跨 run 复现：本用例两次基线 %d / %d ops/ms，差 %.1f%%，已超出 ±5%% 平手带"
+                 % (history[0], history[1], abs(history[0] - history[1]) * 100.0 / min(history))
+                 + "\n→ 该用例上小于 ~7% 的跨引擎差异不宜判读，需再加密迭代或换独占机器。")
+    else:
+        repro = "跨 run 复现：本用例尚无第二次基线，暂不能评估其 run 间方差。"
+    official_rocks = _latest(con, "stateBackends.ROCKS", "score")
+    real_rocks = _latest(con, "keyedState.1000.rocksdb", "score")
+    if official_rocks and real_rocks and real_rocks[0] > 0:
+        rocks_note = ("真跑同形状的 RocksDB 腿只有 %d ops/ms（它的 1/%.1f）。"
+                      % (real_rocks[0], official_rocks[0] / real_rocks[0]))
+    else:
+        rocks_note = "（修正组尚未入库，真实 RocksDB 读数待补。）"
+    # `note_values` rather than `values`: the per-panel loop below already uses
+    # that name for the bar heights.
+    note_values = {
+        "window_spread": spread,
+        "window_repro": repro,
+        "official_rocks": ("%d" % official_rocks[0]) if official_rocks else "—",
+        "rocks_note": rocks_note,
+    }
+    drawn = [(_fill(heading, note_values), wanted, color, warning)
              for heading, wanted, color, warning in drawn]
 
     fig, axes = plt.subplots(1, len(drawn), figsize=(7.0 * len(drawn), 5.2))
@@ -793,12 +844,15 @@ def render_stage1(con, out_path, run_note=""):
         # The note lives in a reserved empty band under the last bar; drawing
         # it at the bottom of the axes overlapped the last case's value label.
         if warning:
-            note, note_color, face, edge, reserve = (
-                warning, "#8a2a2a", "#fdf1f1", "#d9a2a2", 1.95)
+            note, note_color, face, edge = (
+                warning, "#8a2a2a", "#fdf1f1", "#d9a2a2")
         else:
-            note, note_color, face, edge, reserve = (
-                "Flinkable 同形腿：待补（提案 §2 P-A：`fab-windows` 窗口分配器、类型化记录通路）",
-                "#3066be", "#eef3fb", "#b7c8e8", 1.25)
+            note, note_color, face, edge = (
+                DEFAULT_STAGE1_NOTE, "#3066be", "#eef3fb", "#b7c8e8")
+        note = _fill(note, note_values)
+        # The band has to fit the note it carries: a fixed reserve let a longer
+        # note run past the axes edge instead of into empty space.
+        reserve = 0.55 * note.count("\n") + 0.2
         ax.text(0.015, 0.015, note, transform=ax.transAxes, fontsize=8.0,
                 va="bottom", ha="left", color=note_color,
                 bbox=dict(boxstyle="round,pad=0.35", facecolor=face,
@@ -835,6 +889,33 @@ KEYED_STATE_FOOTER = (
     "EmbeddedRocksDBStateBackend。")
 
 
+def _keyed_calib_note(calib):
+    """Plain-language disclosure of how cycles/record was obtained."""
+    ghz = calib["ghz"]
+    text = ("读图提示｜「周期/记录」是折算值，不是计数器读数：本机无可用 PMU"
+            "（`perf stat` 对 cycles/instructions 恒返回未计数哨兵值），改以依赖 ALU 链标定有效主频"
+            " %.4f GHz 后由 ns/记录 换算。" % ghz)
+    nominal = calib.get("nominal_mhz")
+    if nominal:
+        low = int(round((1.0 - nominal / (ghz * 1000.0)) * 100))
+        text += ("机器标称 %.0f MHz 只是 hypervisor 公布值、并非实跑频率，用它换算会偏低约 %d%%。"
+                 % (nominal, low))
+    text += "四次独立标定极差 0.7%（可重复性约 ±1%）；IPC 仍【未测】——它需要指令计数。"
+    return text
+
+
+def _keyed_cross_note(con):
+    """The number that makes this group worth reading, next to its cause."""
+    official = _latest(con, "stateBackends.ROCKS", "score")
+    real = _latest(con, "keyedState.1000.rocksdb", "score")
+    if not (official and real and real[0] > 0):
+        return "交叉校验：待官方 state 组与本组同库后自动补齐。"
+    return ("交叉校验：官方 ROCKS 腿在此形状报 %d ops/ms，\n"
+            "而真正切换后端只有 %d ops/ms（差 %.1f 倍）。\n"
+            "官方四腿的「后端差异」因此不可读，本图是其修正。" % (
+                official[0], real[0], official[0] / real[0]))
+
+
 def keyed_state_cases(con):
     """Cases from the corrected keyed-state sweep, ordered by cardinality then backend."""
     from .terms import KEYED_STATE_CASES
@@ -860,8 +941,14 @@ def keyed_state_series(con):
     return out
 
 
-def render_keyed_state(con, out_path, run_note=""):
-    """Cardinality sweep: throughput lines plus the RocksDB/HashMap cost ratio."""
+def render_keyed_state(con, out_path, run_note="", calib=None):
+    """Cardinality sweep: throughput lines plus the RocksDB/HashMap cost ratio.
+
+    `calib` carries the clock-calibration disclosure; when present, panel A
+    states on the figure itself that the derived cycles/record is an estimate
+    rather than a counter reading, which is the most easily misread number in
+    this stage.
+    """
     from .terms import (KEYED_STATE_BACKENDS, KEYED_STATE_CARDINALITIES,
                         case_short_label)
 
@@ -869,7 +956,7 @@ def render_keyed_state(con, out_path, run_note=""):
     if not series:
         return None
 
-    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(14.0, 5.6))
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(14.0, 6.1))
 
     # Panel A: throughput against cardinality. The dynamic range spans orders of
     # magnitude once RocksDB is really used, so the axis is logarithmic and says so.
@@ -943,14 +1030,22 @@ def render_keyed_state(con, out_path, run_note=""):
                       pad=8)
         ax2.grid(axis="y", alpha=0.25)
         ax2.set_axisbelow(True)
+        # Upper-right stays free: the tallest bar is the second category.
+        ax2.text(0.98, 0.965, _keyed_cross_note(con), transform=ax2.transAxes,
+                 fontsize=7.8, va="top", ha="right", color="#8a2a2a",
+                 bbox=dict(boxstyle="round,pad=0.4", facecolor="#fdf1f1",
+                           edgecolor="#d9a2a2", alpha=0.97))
 
     fig.suptitle("阶段一（修正）｜键基数扫描：真实切换状态后端后的 keyed state 基线",
                  fontsize=13, fontweight="bold", y=0.99)
     if run_note:
         fig.text(0.5, 0.928, run_note, ha="center", fontsize=8.8, color="#555555")
-    fig.text(0.5, 0.012, KEYED_STATE_FOOTER, ha="center", va="bottom", fontsize=7.4,
+    footer = KEYED_STATE_FOOTER
+    if calib and calib.get("ghz"):
+        footer = _keyed_calib_note(calib) + "\n" + footer
+    fig.text(0.5, 0.012, footer, ha="center", va="bottom", fontsize=7.4,
              color="#666666", wrap=True)
-    fig.tight_layout(rect=(0, 0.115, 1, 0.90))
+    fig.tight_layout(rect=(0, 0.165, 1, 0.905))
     fig.savefig(out_path, dpi=160)
     plt.close(fig)
     return out_path
