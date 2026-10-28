@@ -704,15 +704,26 @@ def _draw_trend(fig, gs, row, trend):
 
 # --- stage-1 single-core baseline (official flink-benchmarks JMH) -------------
 STAGE1_GROUPS = [
-    ("窗口聚合｜组内最快最慢相差 9.4 倍，是有效区分项",
+    ("窗口分配器（Window Assigners）｜最快与最慢相差 9.4 倍，是有效区分项",
      ["globalWindow", "tumblingWindow", "slidingWindow", "sessionWindow"], BLUE, None),
-    ("状态后端｜四腿挤在一起，读数不度量状态访问（见告警）",
+    ("状态后端与检查点存储｜四腿只差 6.6%，读数不反映状态访问",
      ["stateBackends.MEMORY", "stateBackends.FS", "stateBackends.ROCKS",
       "stateBackends.ROCKS_INC"], GRAY,
-     "四腿最大只差 6.6%：上游 StateBackendBenchmarkBase 把键空间写死 1000 键、\n"
-     "10000 s 窗口在测量期内永不触发、迭代期间无检查点，量的是 source→map→\n"
-     "keyBy→window 管道。跨引擎对比前须两侧同时放大键空间并打开检查点。"),
+     "上游 StateBackendBenchmarkBase 把键基数固定为 1000（numberOfElements=1000）、窗口是\n"
+     "10000 s 的滚动窗口且在测量期内不触发、迭代期间没有检查点，四腿量的是 source→map→\n"
+     "keyBy→window 管道，不是状态访问成本。跨引擎对比前须两侧同时放大键基数并打开检查点。"),
 ]
+
+# What the proposal asks for in section 3.3, and whether this box can deliver it.
+# No ✓/✗ here on purpose: PingFang SC has no U+2713/U+2717 and they render as tofu.
+STAGE1_COVERAGE = (
+    "提案 §3.3 三项指标覆盖：① 单核吞吐【已测】（本图，按 §3.3 折算为 Mops/s）；"
+    "② 每记录 CPU 周期 / IPC【未测】—— 本机 PMU 不计数，`perf stat` 对 cycles/instructions "
+    "恒返回 140737488355327，需裸金属或开放 PMU 的虚机；"
+    "③ 窗口触发频率 / 状态读写放大【未测】—— 官方 JMH 用例不暴露算子度量，需在 harness 侧打点。")
+
+# JMH reports ops/ms; the proposal reports Mops/s (section 3.3).
+UNIT_TO_MOPS = {"ops/ms": 1.0 / 1000.0, "ops/s": 1.0 / 1e6}
 
 
 def stage1_cases(con):
@@ -729,61 +740,62 @@ def render_stage1(con, out_path, run_note=""):
     leg only, and a lone Flink bar next to an absent Flinkable bar would read
     as a verdict the control variables do not support.
     """
-    from .terms import case_label, unit_label
+    from .terms import case_short_label
 
     cases = stage1_cases(con)
     drawn = [group for group in STAGE1_GROUPS if any(c in cases for c in group[1])]
     if not drawn:
         return None
 
-    fig, axes = plt.subplots(1, len(drawn), figsize=(7.0 * len(drawn), 5.0))
+    fig, axes = plt.subplots(1, len(drawn), figsize=(7.0 * len(drawn), 5.2))
     axes = [axes] if len(drawn) == 1 else list(axes)
     for ax, (heading, wanted, color, warning) in zip(axes, drawn):
         names = [c for c in wanted if c in cases]
-        values, errors, units = [], [], ""
+        values, errors, scale = [], [], 1.0
         for case in names:
             score = _latest(con, case, "score")
             error = _latest(con, case, "error")
-            values.append(score[0])
-            units = score[1]
-            errors.append(0.0 if error is None else error[0])
-        # Shorten "窗口聚合：全局窗口" to "全局窗口" so the tick labels stay narrow.
-        labels = [case_label(c).split("：")[-1] for c in names]
+            scale = UNIT_TO_MOPS.get(score[1], 1.0)
+            values.append(score[0] * scale)
+            errors.append(0.0 if error is None else error[0] * scale)
         ypos = range(len(names))
         ax.barh(ypos, values, height=0.62, color=color, alpha=0.9,
-                xerr=errors, error_kw={"ecolor": "#444444", "elinewidth": 1.1, "capsize": 3})
+                xerr=errors,
+                error_kw={"ecolor": "#444444", "elinewidth": 1.1, "capsize": 3})
         for y, value, error in zip(ypos, values, errors):
-            ax.annotate("%s ±%s" % (format(value, ".0f"), format(error, ".0f")),
+            ax.annotate("%.2f ±%.2f" % (value, error),
                         (value + error, y), xytext=(6, 0), textcoords="offset points",
                         va="center", fontsize=9, color="#222222")
-        ax.set_yticks(list(ypos), labels, fontsize=9.5)
+        ax.set_yticks(list(ypos), [case_short_label(c) for c in names], fontsize=9.5)
         ax.invert_yaxis()
         ax.set_xlim(0, max(values) * 1.34)
-        ax.set_xlabel("吞吐（%s，越高越好）" % unit_label(units), fontsize=9)
-        ax.set_title(heading, fontsize=10.5, loc="left", pad=8)
+        ax.set_xlabel("单核吞吐（百万操作/秒 Mops/s，越高越好）", fontsize=9)
+        ax.set_title(heading, fontsize=10, loc="left", pad=8)
         ax.grid(axis="x", alpha=0.25)
         ax.set_axisbelow(True)
         # The note lives in a reserved empty band under the last bar; drawing
         # it at the bottom of the axes overlapped the last case's value label.
         if warning:
             note, note_color, face, edge, reserve = (
-                warning, "#8a2a2a", "#fdf1f1", "#d9a2a2", 1.9)
+                warning, "#8a2a2a", "#fdf1f1", "#d9a2a2", 1.95)
         else:
             note, note_color, face, edge, reserve = (
-                "Flinkable 同形腿：待补（阻塞于 P-A：fab-windows、类型化记录通路）",
+                "Flinkable 同形腿：待补（提案 §2 P-A：`fab-windows` 窗口分配器、类型化记录通路）",
                 "#3066be", "#eef3fb", "#b7c8e8", 1.25)
-        ax.text(0.015, 0.015, note, transform=ax.transAxes, fontsize=8.2,
+        ax.text(0.015, 0.015, note, transform=ax.transAxes, fontsize=8.0,
                 va="bottom", ha="left", color=note_color,
                 bbox=dict(boxstyle="round,pad=0.35", facecolor=face,
                           edgecolor=edge, alpha=0.95))
         ax.set_ylim(len(names) - 0.5 + reserve, -0.5)
         ax.margins(x=0)
 
-    fig.suptitle("阶段一｜单核吞吐基线（Flink 原版，官方 flink-benchmarks JMH）",
-                 fontsize=13, fontweight="bold", y=0.985)
+    fig.suptitle("阶段一｜单核「内存到内存」吞吐基线（Flink 原版，官方 flink-benchmarks JMH）",
+                 fontsize=13, fontweight="bold", y=0.99)
     if run_note:
-        fig.text(0.5, 0.935, run_note, ha="center", fontsize=8.8, color="#555555")
-    fig.tight_layout(rect=(0, 0, 1, 0.925))
+        fig.text(0.5, 0.932, run_note, ha="center", fontsize=8.8, color="#555555")
+    fig.text(0.5, 0.015, STAGE1_COVERAGE, ha="center", va="bottom", fontsize=7.8,
+             color="#666666", wrap=True)
+    fig.tight_layout(rect=(0, 0.085, 1, 0.905))
     fig.savefig(out_path, dpi=160)
     plt.close(fig)
     return out_path

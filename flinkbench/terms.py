@@ -22,14 +22,17 @@ Internal ledger slang never reaches a report through this table.
 """
 
 CASE_LABELS = {
-    "globalWindow": "窗口聚合：全局窗口",
-    "tumblingWindow": "窗口聚合：滚动窗口",
-    "slidingWindow": "窗口聚合：滑动窗口",
-    "sessionWindow": "窗口聚合：会话窗口",
-    "stateBackends.MEMORY": "状态后端：堆内 + JM 检查点",
-    "stateBackends.FS": "状态后端：堆内 + 文件系统检查点",
-    "stateBackends.ROCKS": "状态后端：RocksDB（全量检查点）",
-    "stateBackends.ROCKS_INC": "状态后端：RocksDB（增量检查点）",
+    # Names follow the docs: window assigners in
+    # docs/dev/datastream/operators/windows.md, backends/storage in
+    # ops/state/state_backends.md and ops/state/checkpoints.md.
+    "globalWindow": "全局窗口（Global Windows）",
+    "tumblingWindow": "滚动窗口（Tumbling Windows）",
+    "slidingWindow": "滑动窗口（Sliding Windows）",
+    "sessionWindow": "会话窗口（Session Windows）",
+    "stateBackends.MEMORY": "HashMapStateBackend + JobManagerCheckpointStorage",
+    "stateBackends.FS": "HashMapStateBackend + FileSystemCheckpointStorage",
+    "stateBackends.ROCKS": "EmbeddedRocksDBStateBackend + 全量检查点（full checkpoints）",
+    "stateBackends.ROCKS_INC": "EmbeddedRocksDBStateBackend + 增量检查点（Incremental Checkpoints）",
     "serde_int_long": "序列化往返：定长字段（整数+长整数）",
     "serde_string": "序列化往返：字符串（含构造）",
     "serde_string_full": "序列化往返：字符串（全链条：构造+编解码）",
@@ -163,8 +166,20 @@ METRIC_LABELS = {
     "flinkable_reuse": "Flinkable（复用目标对象）",
 }
 
+CASE_SHORT_LABELS = {
+    "globalWindow": "全局窗口",
+    "tumblingWindow": "滚动窗口",
+    "slidingWindow": "滑动窗口",
+    "sessionWindow": "会话窗口",
+    "stateBackends.MEMORY": "HashMap · JM 存储",
+    "stateBackends.FS": "HashMap · 文件系统存储",
+    "stateBackends.ROCKS": "RocksDB · 全量检查点",
+    "stateBackends.ROCKS_INC": "RocksDB · 增量检查点",
+}
+
 UNIT_LABELS = {
-    "ops/ms": "次/毫秒",
+    "ops/ms": "操作/毫秒",
+    "Mops/s": "百万操作/秒",
     "ops/s": "次/秒",
     "ns/row": "纳秒/记录",
     "ns/rec": "纳秒/记录",
@@ -177,6 +192,11 @@ UNIT_LABELS = {
     "ops/s": "次/秒",
     "rec/s": "记录/秒",
 }
+
+
+def case_short_label(case):
+    """Tick-label form: the docs' name, shortened for an axis."""
+    return CASE_SHORT_LABELS.get(case) or case_label(case).split("：")[-1]
 
 
 def case_label(case):

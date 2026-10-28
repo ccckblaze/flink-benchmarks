@@ -79,10 +79,20 @@ python3 fabperf/summarize.py fabperf/results/<RUN_ID>
   `slidingWindow` 583、`sessionWindow` 692 ops/ms（单核，Flink 2.3.0）。
   滑动/会话窗口的成本来自每记录多窗格写入，是 Flinkable 侧必须复刻的语义点。
 
+## 本机不可测项（阶段一 §3.3 的第二项）
+
+`perf stat -e cycles,instructions` 在本机对两项**恒返回 140737488355327**（0x7FFFFFFFFFFFF，
+即"未计数"哨兵值），`perf list hardware` 只有 `legacy hardware` 一组、无 `cache_references`
+等硬件事件——说明该云虚机没有向客户机暴露 PMU。因此提案 §3.3 要求的「每记录 CPU 周期 / IPC」
+在本机**测不出来**，不要试图用 `taskset` + 计时反推（那是墙钟不是周期数）。
+要补这一项，须换裸金属或确认开放 PMU 的虚机（`perf stat -e cycles true` 应给出百万量级的真实计数）。
+
 ## 诚实性说明（写结论时必须带上）
 
 - **单核结论**：Stage 1 只测单核算子吞吐，不代表集群整体扩展性；多核/网络/反压另议。
-- **尾延迟未做**：Stage 2 需要核隔离的独占机器，当前测量机（4 vCPU 云主机）不满足条件，P99.9/P99.99 暂不出数。
+- **尾延迟未做**：阶段二需要核隔离的独占机器，当前测量机（4 vCPU 云主机）不满足条件，P99.9/P99.99 暂不出数。
+- **崩溃恢复 MTTR 未做**：阶段三需要 dist 装配 + 控制面 failover + 活 JM 检查点协调（提案 §2 P-B），尚未解锁。
+- **CPU 周期 / IPC 未做**：本机 PMU 不计数，见上节。
 - **崩溃恢复未做**：Stage 3 需要分布式部署 + failover 注入，尚未接入。
 - **版本**：基线为 Flink `2.3.0` 发布版；flinkable 分支基线为 `2.3-SNAPSHOT`，两者同属 2.3 线，差异需在结论中注明。Flinkable 补测时必须是同一台机器、同一 `CORE`、同一 SMT 状态，否则不列入对比。
 - **平手判定**：跨引擎差异 < ±5% 视为平手，不做「反超」渲染。

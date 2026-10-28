@@ -26,8 +26,8 @@ import re
 from . import chart, regression
 from .terms import case_label, metric_label, unit_label
 
-STAGE1_DISCIPLINE = ("绑核 cpu0 · 同物理核 SMT 兄弟下线 · 7 迭代 × 20 s · Xmx4g · "
-                     "ActiveProcessorCount=1 · glibc 分配器 · Flink 2.3.0")
+STAGE1_DISCIPLINE = ("`taskset` 绑核 cpu0 · 关闭同物理核超线程（SMT）兄弟核 · 7 迭代 × 20 s · "
+                     "Xmx4g · ActiveProcessorCount=1 · glibc 分配器 · Flink 2.3.0")
 
 STAGE1_ORDER = [
     "globalWindow", "tumblingWindow", "slidingWindow", "sessionWindow",
@@ -279,29 +279,49 @@ def generate(con, out_dir, title, env_lines):
                       "停读期间 RSS 持平基线，正说明满队列被封顶在预算内、逐级回传为端到端反压，"
                       "而非在引擎里无界堆积。"]
     if stage1:
-        lines += ["", "## 阶段一：单核吞吐基线（官方 flink-benchmarks JMH，仅 Flink 腿）", ""]
+        lines += ["", "## 阶段一：单核「内存到内存」吞吐基线（官方 flink-benchmarks JMH，仅 Flink 腿）", ""]
         if stage1_png:
             lines += ["![阶段一单核吞吐基线](%s)" % stage1_png, ""]
         lines += ["",
-                  "| 用例 | Flink 基线 | 误差 (99.9%) | 单位 | Flinkable 同形腿 |",
-                  "| --- | --- | --- | --- | --- |"]
+                  "| 用例（文档原名） | Flink 基线 | 误差 (99.9%) | Flinkable 同形腿 |",
+                  "| --- | --- | --- | --- |"]
         for case in [c for c in STAGE1_ORDER if c in stage1] + sorted(
                 stage1 - set(STAGE1_ORDER)):
             score = chart._latest(con, case, "score")
             if score is None:
                 continue
             err = chart._latest(con, case, "error")
-            lines.append("| %s | %.0f | ±%s | %s | 待补 |" % (
-                case_label(case), score[0], "—" if err is None else "%.0f" % err[0],
-                unit_label(score[1])))
-        lines += ["", "口径：单核（绑核 + 关同物理核 SMT 兄弟）、7 迭代 × 20 s、Flink 2.3.0、"
-                      "官方 JMH 类，控制变量逐项记录在 run 目录 `env.json`。此表**不是跨引擎对比**，"
-                      "Flinkable 同形腿受 `fab-windows`、类型化记录通路等 P-A 阻塞项制约，待补测后另开面板。", "",
+            scale = chart.UNIT_TO_MOPS.get(score[1], 1.0)
+            lines.append("| %s | %.2f | ±%.2f | 待补 |" % (
+                case_label(case), score[0] * scale,
+                0.0 if err is None else err[0] * scale))
+        lines += ["", "命名口径：窗口名取 `docs/dev/datastream/operators/windows.md` 的窗口分配器"
+                      "（Tumbling / Sliding / Session / Global Windows）；状态后端与检查点存储取"
+                      " `docs/ops/state/state_backends.md`、`docs/ops/state/checkpoints.md` 的"
+                      " `HashMapStateBackend` / `EmbeddedRocksDBStateBackend` /"
+                      " `JobManagerCheckpointStorage` / `FileSystemCheckpointStorage` 与"
+                      " *Incremental Checkpoints*；单位按提案 §3.3 折算为 Mops/s（JMH 原生报 ops/ms，"
+                      "1 ops/ms = 1000 ops/s）。", "",
+                  "测量口径：单核（`taskset` 绑核 + 关闭同物理核超线程 SMT 兄弟核）、7 迭代 × 20 s、"
+                  "Flink 2.3.0、官方 JMH 用例，控制变量逐项记录在 run 目录 `env.json`。此表**不是跨引擎"
+                  "对比**，Flinkable 同形腿受提案 §2 P-A 阻塞项（`fab-windows`、类型化记录通路）制约，"
+                  "待补测后另开面板。", "",
+                  "提案 §3.3 要求三项指标，本基线只覆盖第一项：",
+                  "",
+                  "| §3.3 指标 | 状态 | 原因 |",
+                  "| --- | --- | --- |",
+                  "| 单核吞吐（Mops/s） | ✓ 已测 | 本表与本图 |",
+                  "| 每记录 CPU 周期、IPC | ✗ 未测 | 本机 PMU 不计数：`perf stat -e cycles,instructions` "
+                  "对两项恒返回 140737488355327（未计数哨兵值），需裸金属或开放 PMU 虚机 |",
+                  "| 窗口触发频率、状态读写放大 | ✗ 未测 | 官方 JMH 用例不暴露算子度量"
+                  "（无 `numLateRecordsDropped`/trigger 计数），需在 harness 侧打点 |",
+                  "",
                   "**状态后端四腿的读数告警**：`MEMORY`/`FS`/`ROCKS`/`ROCKS_INC` 实测最大只差 6.6%，"
-                  "这不代表状态访问成本接近，而是上游 `StateBackendBenchmarkBase` 把键空间写死 1000 键、"
-                  "负载窗口 10000 s 在测量期内永不触发、迭代期间又无检查点，RocksDB 工作集全命中 "
-                  "memtable/块缓存——该组量的是 `source→map→keyBy→window` 管道。要在这一组出有意义的"
-                  "跨引擎对比，必须两侧同时放大键空间并打开检查点。"]
+                  "这不代表状态访问成本接近，而是上游 `StateBackendBenchmarkBase` 把键基数固定为 1000"
+                  "（`numberOfElements = 1000`）、负载窗口是 10000 s 的滚动窗口且在测量期内永不触发、"
+                  "迭代期间又没有检查点，`EmbeddedRocksDBStateBackend` 的工作集全留在 memtable 与块缓存里"
+                  "——该组量的是 `source→map→keyBy→window` 管道。要在这一组出有意义的跨引擎对比，"
+                  "必须两侧同时放大键基数并打开检查点。"]
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(
         "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()
