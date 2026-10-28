@@ -131,23 +131,25 @@ def generate(con, out_dir, title, env_lines):
         return row[0] if row else None
 
     bp_matrix = [
-        # Engine column unified to Flinkable / Flink; the budget state is spelled
-        # out so the reader can pair like-for-like (control variables). Flink's
-        # "未设预算" is the reserved-pool proxy (its budget is mandatory).
-        ("网络通道停读", "Flinkable·未设预算", "backpressure_tcp_stall"),
+        # M153: the Flinkable budget is default-on (`Exchange::new` = 16×32 KB,
+        # `ShuffleServer::start` = 16/64×32 KB), so the default-config rows are
+        # the capped legs; the unbounded rows are marked 显式关闭预算 — they are
+        # the opt-out. Flink's reserved-pool proxy row stays, but never as a
+        # cross-engine pairing (chart ⑦ shows 设预算 pairs only).
         ("网络通道停读", "Flinkable·设预算", "backpressure_tcp_stall_capped"),
         ("网络通道停读", "Flink·设预算", "backpressure_tcp_stall_jvm"),
-        ("网络通道停读", "Flink·未设预算（预留全场景）", "backpressure_reserved_jvm"),
-        ("广播扇出·一慢", "Flinkable·未设预算", "backpressure_broadcast"),
+        ("网络通道停读", "Flinkable·显式关闭预算", "backpressure_tcp_stall"),
+        ("网络通道停读", "Flink·预留全场景（预算强制的代理）", "backpressure_reserved_jvm"),
         ("广播扇出·一慢", "Flinkable·设预算", "backpressure_broadcast_capped"),
         ("广播扇出·一慢", "Flink·设预算", "backpressure_broadcast_jvm"),
-        ("数据倾斜·一热", "Flinkable·未设预算", "backpressure_skew"),
+        ("广播扇出·一慢", "Flinkable·显式关闭预算", "backpressure_broadcast"),
         ("数据倾斜·一热", "Flinkable·设预算", "backpressure_skew_capped"),
         ("数据倾斜·一热", "Flink·设预算", "backpressure_skew_jvm"),
-        ("多输入归并·一慢（Flinkable 内部边）", "Flinkable·未设预算", "backpressure_union"),
+        ("数据倾斜·一热", "Flinkable·显式关闭预算", "backpressure_skew"),
         ("多输入归并·一慢（Flinkable 内部边）", "Flinkable·设预算", "backpressure_union_capped"),
-        ("任务间通道停读（Flinkable 内部边）", "Flinkable·未设预算", "backpressure_channel"),
+        ("多输入归并·一慢（Flinkable 内部边）", "Flinkable·显式关闭预算", "backpressure_union"),
         ("任务间通道停读（Flinkable 内部边）", "Flinkable·设预算", "backpressure_channel_capped"),
+        ("任务间通道停读（Flinkable 内部边）", "Flinkable·显式关闭预算", "backpressure_channel"),
         ("非对齐检查点在途快照", "Flinkable", "backpressure_capture"),
         ("非对齐检查点在途快照", "Flink", "backpressure_capture_jvm"),
         ("Python 算子停读（嵌入式）", "Flinkable", "backpressure_python"),
@@ -203,12 +205,13 @@ def generate(con, out_dir, title, env_lines):
                       "腾出预算后 44µs 唤醒、停读期间 RSS 持平基线——一个满队列就此逐级回传为端到端反压。"
                       "未封顶形状排空后 RSS 是否回落取决于分配器能否归还"
                       "连续空闲块（归并/广播回落，停读/倾斜部分保留），属碎片而非泄漏。"
-                      "**控制变量（M152）**：Flink 的网络缓冲预算是强制的，没有真正的“未设预算”，"
-                      "其“未设预算”即预留到能吞下全场景的代理；故跨引擎对照一律**同为“设预算”**才公平——"
-                      "广播/倾斜已补 Flinkable·设预算 腿（每通道 16 段、全局 64 段，与 Flink `maxBuffersPerChannel`"
-                      "同配额），封顶后热通道 0.5 MB、RSS 5.3/4.7 MB，与 Flink·设预算 的 83/84 MB 同口径可比；"
-                      "网络形状给出完整 2×2（两引擎×两预算态）。任务间通道/多输入归并为 Flinkable 进程内边，"
-                      "Flink 无对应，单列不参与跨引擎配平。" + interp_note]
+                      "**控制变量（M153）**：Flink 的网络缓冲预算是强制的，没有真正的“未设预算”——"
+                      "Flinkable 已把预算改为**默认开启**（`Exchange::new` 16×32 KB、`ShuffleServer::start` "
+                      "每通道 16 段/全局 64 段，与 Flink `maxBuffersPerChannel=16`、`NetworkBufferPool` 同配额），"
+                      "默认配置即与 Flink 同为“设预算”，图⑦只保留可配平的设预算柱对；"
+                      "表中 显式关闭预算 行是 `unbounded()` 选离的对照腿，仅用于展示预算的边际效果。"
+                      "广播/倾斜封顶后热通道 0.5 MB、RSS 5.3/4.7 MB，与 Flink·设预算 的 83/84 MB 同口径可比。"
+                      "任务间通道/多输入归并为 Flinkable 进程内边，Flink 无对应，单列不参与跨引擎配平。" + interp_note]
 
     # M151: end-to-end backpressure — the producer-side park, priced for both
     # the in-process edge and the network data plane. These are latency/flatness

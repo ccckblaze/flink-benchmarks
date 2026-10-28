@@ -353,33 +353,25 @@ def render(con, out_path, title):
             ax.set_ylim(0, max(after + jvm) * 1.42)
         elif panel == "backpressure":
             _bp_panel(ax, con, [
-                # Control-variable framing: inside each shape the pairs are held
-                # to the SAME buffer-budget axis, so a Flinkable bar is only ever
-                # read against a Flink bar configured the same way. The network
-                # shape carries the full 2×2 (both engines × both budget states);
-                # broadcast/skew add the Flinkable·设预算 leg so they become a
-                # capped-vs-capped comparison; channel/union are Flinkable-internal
-                # edges with no Flink counterpart and say so.
-                ("网络通道停读\n（2×2：引擎×预算）", [
-                    ("backpressure_tcp_stall", False),
+                # M153: Flinkable's buffer budget is default-on, so ⑦ only ever
+                # compares like with like — every bar pair is 设预算 vs 设预算.
+                # The Flinkable·未设预算 growth bars have no honest Flink
+                # counterpart (Flink's pool is mandatory), so they are removed
+                # from this panel; free-growth evidence stays in the table.
+                ("网络通道停读", [
                     ("backpressure_tcp_stall_capped", False),
-                    ("backpressure_tcp_stall_jvm", True),
-                    ("backpressure_reserved_jvm", True)]),
+                    ("backpressure_tcp_stall_jvm", True)]),
                 ("广播扇出·一慢", [
-                    ("backpressure_broadcast", False),
                     ("backpressure_broadcast_capped", False),
                     ("backpressure_broadcast_jvm", True)]),
                 ("数据倾斜·一热", [
-                    ("backpressure_skew", False),
                     ("backpressure_skew_capped", False),
                     ("backpressure_skew_jvm", True)]),
                 ("任务间通道停读\n（Flinkable 内部边）", [
-                    ("backpressure_channel", False),
                     ("backpressure_channel_capped", False)]),
                 ("多输入归并·一慢\n（Flinkable 内部边）", [
-                    ("backpressure_union", False),
                     ("backpressure_union_capped", False)]),
-            ], "⑦ 缓冲队列类反压：同形状内按预算态配平（对下标签＝引擎·预算态；左停读·右排空）")
+            ], "⑦ 缓冲队列类反压：双方均按预算运行（对下标签＝引擎·预算态；左停读·右排空）")
         elif panel == "backpressure_release":
             _bp_panel(ax, con, [
                 ("非对齐检查点\n（在途数据快照）", [("backpressure_capture", False),
