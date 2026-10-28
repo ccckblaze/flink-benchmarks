@@ -153,21 +153,7 @@ BP_SHAPES = [
 BP_TITLE = "⑦ 缓冲队列类反压：双方均按预算运行（对下标签＝引擎·预算态；左停读·右排空）"
 
 
-def _bp_used_components(con, groups):
-    """(tag, colour) pairs the row's legs will actually stack, mirroring the
-    component rules of _bp_stacks so the row legend matches its bars."""
-    used = set()
-    for _label, engines in groups:
-        for case, jvm in engines:
-            st = _bp_stacks(con, case, jvm) if _has(con, case) else None
-            if st is None:
-                continue
-            for _size, color, tag in st[0] + st[1]:
-                used.add((tag, color))
-    return used
-
-
-def _bp_panel(ax, con, groups, title, as_row=False, row_axes=None, no_legend=False):
+def _bp_panel(ax, con, groups, title, no_legend=False, legend_below=False):
     # M148: one figure per backpressure family. Every engine inside a group
     # gets an adjacent pair of absolute-RSS bars — left bar is the peak while
     # the consumer is stalled, right bar is the RSS once it drained — so the
@@ -178,35 +164,6 @@ def _bp_panel(ax, con, groups, title, as_row=False, row_axes=None, no_legend=Fal
     # the legend.
     from matplotlib.patches import Patch
 
-    if as_row:
-        # M155: one shape per subplot, four shapes on one row. The caller owns
-        # the row geometry (a nested GridSpec) and hands the axes in; each is
-        # rendered through the same single-group code path, so bar geometry
-        # and engine tags behave exactly as before.
-        ax.axis("off")
-        shared = None
-        for (label, engines), sub in zip(groups, row_axes):
-            _bp_panel(sub, con, [(label, engines)], title, as_row=False, no_legend=True)
-            sub.set_title(label.replace("\n", " "), fontsize=8.5, pad=4)
-            sub.set_xticklabels([])
-            sub.tick_params(axis="x", length=0)
-            if shared is None:
-                shared = sub
-            else:
-                sub.set_ylabel("")
-        order = ["运行时基线", "Flinkable 内核", "CPython 解释器", "Python 库", "引擎积压",
-                 "预算封顶积压", "缓冲池占用", "零拷贝捕获", "持久化拷贝", "快照额外拷贝",
-                 "未回落残留"]
-        used = _bp_used_components(con, groups)
-        handles = [Patch(color=c, label=t) for t in order for (tag, c) in used if tag == t]
-        # tight_layout repositions the axes after this call, so the panel
-        # title rides on the first subplot and the legend sits below the row
-        # (axes-relative anchors survive the relayout; figure coords do not).
-        shared.set_title(title + "\n" + groups[0][0].replace("\n", " "),
-                         fontsize=8.5, pad=4)
-        shared.legend(handles=handles, fontsize=6, loc="upper left",
-                      bbox_to_anchor=(0.0, -0.16), ncol=2, framealpha=0.95)
-        return
 
     peak_max, used = 0.0, set()
     for g, (label, engines) in enumerate(groups):
@@ -266,18 +223,23 @@ def _bp_panel(ax, con, groups, title, as_row=False, row_axes=None, no_legend=Fal
                         bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="#bbb", lw=0.5,
                                   alpha=0.92))
             peak_max = max(peak_max, peak)
-    if not as_row:
-        for g in range(1, len(groups)):
-            ax.axvline(g - 0.5, color="#e2e2e2", lw=0.8, zorder=0)
+    for g in range(1, len(groups)):
+        ax.axvline(g - 0.5, color="#e2e2e2", lw=0.8, zorder=0)
     order = ["运行时基线", "Flinkable 内核", "CPython 解释器", "Python 库", "引擎积压",
              "预算封顶积压", "缓冲池占用", "零拷贝捕获", "持久化拷贝", "快照额外拷贝", "未回落残留"]
     handles = [Patch(color=c, label=t) for t in order for (tag, c) in used if tag == t]
     ax.set_xticks(range(len(groups)), [g[0] for g in groups])
-    ax.tick_params(axis="x", labelsize=7)
-    ax.set_ylabel("进程常驻内存 RSS（MB，绝对值）")
-    ax.set_title(title + "\n（每对柱：左=停读峰值 · 右=排空终值；对下白框=所属引擎）", fontsize=10)
+    ax.tick_params(axis="x", labelsize=6.5)
+    ax.set_ylabel("进程常驻内存 RSS（MB，绝对值）", fontsize=8)
+    ax.set_title(title + "\n（每对柱：左=停读峰值 · 右=排空终值；对下白框=所属引擎）",
+                 fontsize=8.5)
     legend_corner = "upper right" if peak_max < 300 else "upper left"
-    if not no_legend:
+    if legend_below:
+        # Cell-scale ⑦: an in-axes legend covers the 拒绝 annotations; hang it
+        # under the axis instead (the row has hspace to spare).
+        ax.legend(handles=handles, fontsize=6, loc="upper center",
+                  bbox_to_anchor=(0.5, -0.14), ncol=4, framealpha=0.95)
+    elif not no_legend:
         ax.legend(handles=handles, fontsize=7, loc=legend_corner, ncol=2)
     ax.set_ylim(0, peak_max * 1.30)
 
@@ -298,25 +260,22 @@ def render(con, out_path, title):
         panels.append("throughput")
     if _has(con, "serde_shape_cjk10"):
         panels.append("shapes")
-    bp_row = _has(con, "backpressure_tcp_stall")
+    if _has(con, "backpressure_tcp_stall"):
+        panels.append("backpressure")
+        panels.append("backpressure_release")
 
     n = len(panels)
     if n == 0:
         raise SystemExit("no panel data in the store — ingest a run first")
     trend = _trend_series(con)
-    bp_rows = (2 if bp_row else 0)
-    panel_rows = (n + 1) // 2
-    rows = panel_rows + bp_rows + (1 if trend else 0)
-    fig = plt.figure(figsize=(13.2, 4.8 * panel_rows + (8.2 if bp_row else 0)
-                             + (3.6 if trend else 0)))
-    gs = GridSpec(rows, 2, figure=fig, hspace=0.62, wspace=0.26)
-    flat = [fig.add_subplot(gs[i // 2, i % 2]) for i in range(n)]
-    if bp_row:
-        # M155: ⑦ spans a full-width row (four shapes on one row), ⑧ the next.
-        bp_gs = gs[panel_rows, :].subgridspec(1, 4, wspace=0.30)
-        bp_axes = [fig.add_subplot(bp_gs[0, j]) for j in range(4)]
-        bp_ax = bp_axes[0]
-        bp_rel_ax = fig.add_subplot(gs[panel_rows + 1, :])
+    # M156: the whole comparison is one screen — eight panels on a 4-column
+    # grid (two rows of four), the trend line spans the full width below.
+    cols = 4
+    panel_rows = (n + cols - 1) // cols
+    rows = panel_rows + (1 if trend else 0)
+    fig = plt.figure(figsize=(22.0, 4.6 * panel_rows + (3.6 if trend else 0)))
+    gs = GridSpec(rows, cols, figure=fig, hspace=0.85, wspace=0.30)
+    flat = [fig.add_subplot(gs[i // cols, i % cols]) for i in range(n)]
     fig.suptitle(title, fontsize=15, fontweight="bold", y=0.99)
     w = 0.34
 
@@ -424,6 +383,14 @@ def render(con, out_path, title):
             ax.set_title("⑥ 非 ASCII 字符串编解码（与 Flink 同会话并列）", fontsize=10)
             ax.legend(fontsize=7.5, loc="upper right")
             ax.set_ylim(0, max(after + jvm) * 1.42)
+        elif panel == "backpressure":
+            _bp_panel(ax, con, BP_SHAPES, BP_TITLE, legend_below=True)
+        elif panel == "backpressure_release":
+            _bp_panel(ax, con, [
+                ("非对齐检查点\n（在途数据快照）", [("backpressure_capture", False),
+                                        ("backpressure_capture_jvm", True)]),
+                ("Python 算子停读\n（Flinkable 嵌入式）", [("backpressure_python", False)]),
+            ], "⑧ 检查点与 Python 算子：排空前 vs 排空后的绝对 RSS", no_legend=True)
         elif panel == "memory":
             if _has(con, "memory_jm_rss"):
                 # M131: the standardized distributed deployment — one JobManager plus one
@@ -616,15 +583,8 @@ def render(con, out_path, title):
 
     for ax in flat[len(panels):]:
         ax.axis("off")
-    if bp_row:
-        _bp_panel(bp_ax, con, BP_SHAPES, BP_TITLE, as_row=True, row_axes=bp_axes)
-        _bp_panel(bp_rel_ax, con, [
-            ("非对齐检查点\n（在途数据快照）", [("backpressure_capture", False),
-                                    ("backpressure_capture_jvm", True)]),
-            ("Python 算子停读\n（Flinkable 嵌入式）", [("backpressure_python", False)]),
-        ], "⑧ 检查点与 Python 算子：排空前 vs 排空后的绝对 RSS")
     if trend:
-        _draw_trend(fig, gs, panel_rows + bp_rows, trend)
+        _draw_trend(fig, gs, panel_rows, trend)
 
     fig.text(0.5, 0.005,
              "数据来源：本地结果库（benchctl.py 摄取）；口径见报告 §1。端到端作业对比尚未开展（见报告覆盖矩阵）。",
@@ -716,7 +676,7 @@ def _draw_trend(fig, gs, row, trend):
     ax.set_xlim(xs[0] - 0.35, xs[-1] + 1.05)
     ax.set_xticks(xs, labels, fontsize=8)
     ax.set_ylabel("每记录耗时（纳秒，对数轴）")
-    ax.set_title("⑦ 时间线趋势与回归标记（官方方法论核心视图：同一指标随摄取次序的走势）", fontsize=10)
+    ax.set_title("⑨ 时间线趋势与回归标记（官方方法论核心视图：同一指标随摄取次序的走势）", fontsize=10)
     # Legend above the axes: the end-of-line 改善/恶化 markers own the right margin.
     ax.legend(fontsize=7.5, loc="lower left", bbox_to_anchor=(0.0, 1.01, 1.0, 0.22),
               mode="expand", ncol=3, framealpha=1.0)
