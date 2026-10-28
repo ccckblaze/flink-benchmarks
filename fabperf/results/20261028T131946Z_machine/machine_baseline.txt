@@ -1,0 +1,79 @@
+probe_build=cc -O2
+generated_utc=2026-10-28T13:19:46Z
+host=VM-0-11-ubuntu
+os=Linux 7.0.0-30-generic x86_64
+cpu_model=General Processors
+cpu_arch=x86_64
+hypervisor=KVM
+virt_type=full
+sockets=1
+cores_per_socket=
+threads_per_core=2
+nproc=4
+cpu_present=0-3
+cache_L1d=64 KiB (2 instances)
+cache_L1i=64 KiB (2 instances)
+cache_L2=8 MiB (2 instances)
+cache_L3=32 MiB (1 instance)
+flag_avx2=yes
+flag_avx512f=no
+flag_fma=yes
+flag_sha_ni=yes
+flag_aes=yes
+mem_total_mb=15480
+mem_available_mb=14645.4
+thp=always [madvise] never
+disk_row|sr0    184008704 rom  ata       1 QEMU DVD-ROM
+disk_row|vda  21474836480 disk virtio    1
+disk_row|vdb  42949672960 disk virtio    1
+fs_row|/dev/vda3      ext4  20467408896  7635140608 11878731776  40% /
+fs_row|/dev/vda1      vfat    562999296     6606848   556392448   2% /boot/efi
+fs_row|/dev/vdb       ext4  41956900864 25719648256 14072991744  65% /mnt/datadisk0
+nic=eth0=speed:-1,driver:unknown
+disk_datadisk_hostcache_dd_line=2147483648 bytes (2.1 GB, 2.0 GiB) copied, 0.490489 s, 4.4 GB/s
+disk_datadisk_write_hostcache_mibps=4400.0
+disk_datadisk_write_mode=fdatasync_persisted
+disk_datadisk_write_dd_line=2147483648 bytes (2.1 GB, 2.0 GiB) copied, 10.7841 s, 199 MB/s
+disk_datadisk_seq_write_mibps=199.0
+disk_datadisk_cache_dropped=yes
+disk_datadisk_read_direct_error=dd: IO error: Invalid input
+disk_datadisk_read_mode=cached_fallback
+disk_datadisk_read_dd_line=2147483648 bytes (2.1 GB, 2.0 GiB) copied, 10.2033 s, 210 MB/s
+disk_datadisk_seq_read_mibps=210.0
+disk_datadisk_seq_mib=2048
+disk_root_hostcache_dd_line=1073741824 bytes (1.1 GB, 1.0 GiB) copied, 0.288627 s, 3.7 GB/s
+disk_root_write_hostcache_mibps=3700.0
+disk_root_write_mode=fdatasync_persisted
+disk_root_write_dd_line=1073741824 bytes (1.1 GB, 1.0 GiB) copied, 5.39295 s, 199 MB/s
+disk_root_seq_write_mibps=199.0
+disk_root_cache_dropped=yes
+disk_root_read_direct_error=dd: IO error: Invalid input
+disk_root_read_mode=cached_fallback
+disk_root_read_dd_line=1073741824 bytes (1.1 GB, 1.0 GiB) copied, 4.78721 s, 224 MB/s
+disk_root_seq_read_mibps=224.0
+disk_root_seq_mib=1024
+disk_datadisk_randread_block_kib=4
+disk_datadisk_randread_ops=43350
+disk_datadisk_randread_seconds=10.000
+disk_datadisk_randread_kiops=4.335
+disk_datadisk_randread_mibps=16.933
+disk_datadisk_fsync_bytes=4096
+disk_datadisk_fsync_count=400
+disk_datadisk_fsync_p50_ms=0.251
+disk_datadisk_fsync_p99_ms=1.176
+disk_datadisk_fsync_max_ms=2.671
+disk_root_fsync_bytes=4096
+disk_root_fsync_count=400
+disk_root_fsync_p50_ms=1.725
+disk_root_fsync_p99_ms=3.411
+disk_root_fsync_max_ms=8.245
+mem_copy1_bytes=44023414784
+mem_copy1_gibps=13.667
+mem_triad1_bytes=46707769344
+mem_triad1_gibps=14.500
+mem_copyall_threads=4
+mem_copyall_bytes=92341796864
+mem_copyall_gibps=28.667
+mem_buffer_mb_per_stream=512
+mem_seconds=3
+mem_threads_all=4

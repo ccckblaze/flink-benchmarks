@@ -171,6 +171,124 @@ def _clock_calibration(con):
     return calib, path
 
 
+def _machine_baseline():
+    """Latest fabperf machine profile + baseline I/O capture, or (None, None)."""
+    results = os.path.join(_REPO_ROOT, "fabperf", "results")
+    try:
+        names = sorted(n for n in os.listdir(results) if n.endswith("_machine"))
+    except OSError:
+        return None, None
+    for name in reversed(names):
+        path = os.path.join(results, name, "machine_baseline.json")
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as handle:
+                return json.load(handle), path
+        except (OSError, ValueError):
+            continue
+    return None, None
+
+
+def _fmt_mib(value):
+    return "—" if value is None else "%.0f MiB/s" % value
+
+
+def _machine_rows(machine):
+    """Markdown rows for the measurement-box profile and its baseline I/O.
+
+    Honesty rules on this box: it is a KVM guest, the CPU model is masked,
+    virtio exposes a bogus rotational flag, and cloud disks carry their own
+    throttling, so every number here is what the VM can actually achieve,
+    not a hardware ceiling. The rows say so instead of implying a bare metal
+    baseline.
+    """
+    hw = machine.get("hardware", {})
+    disk = machine.get("disk", {})
+    mem = machine.get("memory", {})
+    caches = hw.get("caches", {})
+    l3 = caches.get("L3") or "—"
+    out = ["",
+           "本表由 `fabperf/machine_baseline.sh` 现场采集（run `%s`），"
+           "全部工具为 dd 与自编译探针（本机无 fio/sysbench）。"
+           % machine.get("generated_utc", "—"),
+           "",
+           "### 机器画像",
+           "",
+           "| 项目 | 值 | 说明 |",
+           "| --- | --- | --- |"]
+    model = hw.get("model") or "—"
+    if "general" in model.lower():
+        model += "（hypervisor 遮蔽了型号，指令集按 flags 列判断为 AMD EPYC 系）"
+    out.append("| CPU | %s | %s；插槽 %s、每核线程 %s、在线 vCPU %s |" % (
+        model, hw.get("arch", "—"), hw.get("sockets", "—"),
+        hw.get("threads_per_core", "—"), hw.get("nproc", "—")))
+    out.append("| 虚拟化 | %s / %s | **这是一台 KVM 虚拟机，不是物理机**；"
+               "本表是 guest 视角的有效能力下限 |" % (
+                   hw.get("hypervisor", "—"), hw.get("virtualization_type", "—")))
+    cache_txt = "，".join("%s = %s" % (k, v) for k, v in sorted(caches.items()))
+    out.append("| 缓存 | %s | L2/L3 数值为全机汇总；键基数扫描的拐点对照 L3 阅读（见上节） |"
+               % (cache_txt or "—"))
+    flags = [k.upper() for k, v in sorted(hw.get("flags", {}).items()) if v == "yes"]
+    out.append("| 指令集要点 | %s | AVX-512 不可用，SIMD 路线按 AVX2 设计 |"
+               % ("、".join(flags) or "—"))
+    out.append("| 内存 | 总 %s MiB（可用 %s MiB） | THP：%s |" % (
+        hw.get("mem_total_mb", "—"), hw.get("mem_available_mb", "—"),
+        hw.get("thp", "—")))
+    devs = hw.get("block_devices", [])
+    dev_txt = "；".join("%s %s 字节 / %s" % (d.get("name"), d.get("size_bytes"),
+                                          d.get("transport") or d.get("type"))
+                        for d in devs if d.get("type") == "disk")
+    out.append("| 块设备 | %s | virtio 盘的 rotational=1 是前端伪装标志，不代表机械盘 |"
+               % (dev_txt or "—"))
+    nics = hw.get("nic") or "—"
+    out.append("| 网络 | %s | 速率由 hypervisor 遮蔽，集群腿不可据此估算带宽上限 |" % nics)
+
+    out += ["", "### 磁盘基线（dd，1 MiB 块）", "",
+            "| 位置 | 顺序写（fdatasync 落盘） | 顺序读 | 4 KiB 随机读（O_DIRECT） |"
+            " fsync p50 | fsync p99 |",
+            "| --- | --- | --- | --- | --- | --- |"]
+    hostcache = []
+    for tag, mount in (("datadisk", "数据盘 /mnt/datadisk0（vdb）"),
+                       ("root", "系统盘 /（vda3）")):
+        d = disk.get(tag, {})
+        rand = d.get("randread_kiops")
+        rand_txt = "—" if rand is None else "%.2f Kiops" % rand
+        r_mode = "" if d.get("read_mode") in (None, "direct") else "（%s）" % d["read_mode"]
+        hc = d.get("write_hostcache_mibps")
+        if hc:
+            hostcache.append("%s：%s MiB/s" % (tag, "%.0f" % hc))
+        out.append("| %s | %s | %s%s | %s | %s | %s |" % (
+            mount,
+            _fmt_mib(d.get("seq_write_mibps")),
+            _fmt_mib(d.get("seq_read_mibps")), r_mode,
+            rand_txt,
+            "—" if d.get("fsync_p50_ms") is None else "%.2f ms" % d["fsync_p50_ms"],
+            "—" if d.get("fsync_p99_ms") is None else "%.2f ms" % d["fsync_p99_ms"]))
+    note = ("写列为 `conv=fdatasync` 真正落盘的吞吐；读列为缓存清空后（drop_caches）读数"
+            "（这台 VM 上 O_DIRECT 读被 virtio 层拒绝，回退为缓存旁路验证后的缓冲读）。"
+            "云盘自带限速配额，上述数字是这台 VM 当下的交付水平，不代表宿主机或盘的物理上限。")
+    if hostcache:
+        note += ("对照：`oflag=direct` 不落盘的接受速率为 %s——virtio 把差异藏在了宿主缓存里，"
+                 "这正是只用 O_DIRECT 写会虚高的原因。" % "，".join(hostcache))
+    out += ["", note]
+
+    if mem:
+        out += ["", "### 内存带宽（自编译探针，512 MiB/流缓冲，远超各级缓存）", "",
+                "| 模式 | 带宽 |", "| --- | --- |"]
+        out.append("| 单线程拷贝（读+写流量） | %s GiB/s |" % _gibps(mem.get("copy1_gibps")))
+        out.append("| 单线程 triad（2 读 1 写流量） | %s GiB/s |"
+                   % _gibps(mem.get("triad1_gibps")))
+        threads = mem.get("copyall_threads")
+        out.append("| 全部 %s 线程并发拷贝 | %s GiB/s |"
+                   % (threads, _gibps(mem.get("copyall_gibps"))))
+    return out
+
+
+def _gibps(value):
+    return "—" if value is None else "%.1f" % value
+
+
 def _stage1_run_note(con):
     """Fixed discipline of flink_baseline.sh, plus the run id it came from."""
     row = con.execute(
@@ -432,7 +550,8 @@ def generate(con, out_dir, title, env_lines):
             calib, _calib_path = _clock_calibration(con)
             keyed_png = chart.render_keyed_state(
                 con, os.path.join(out_dir, "keyed_state.png"),
-                run_note=_stage1_run_note(con), calib=calib)
+                run_note=_stage1_run_note(con), calib=calib,
+                machine=_machine_baseline()[0])
             ghz = calib["ghz"] if calib else None
             lines += ["", "## 阶段一（修正）：键基数扫描与状态后端真实切换", ""]
             if keyed_png:
@@ -474,6 +593,9 @@ def generate(con, out_dir, title, env_lines):
                       "工作集越过末级缓存的拐点，拐点之后每记录成本由访存而非指令数决定。",
                       "",
                       "**与本组互为印证的两处交叉校验**："] + _cross_checks(con)
+        machine, _machine_path = _machine_baseline()
+        if machine:
+            lines += ["", "## 测量机画像与基线 I/O", ""] + _machine_rows(machine)
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(
         "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()

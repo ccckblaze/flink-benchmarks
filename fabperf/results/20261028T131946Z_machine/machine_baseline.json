@@ -1,0 +1,142 @@
+{
+ "generated_utc": "2026-10-28T13:19:46Z",
+ "host": "VM-0-11-ubuntu",
+ "hardware": {
+  "model": "General Processors",
+  "arch": "x86_64",
+  "hypervisor": "KVM",
+  "virtualization_type": "full",
+  "sockets": "1",
+  "cores_per_socket": "",
+  "threads_per_core": "2",
+  "nproc": "4",
+  "cpu_present": "0-3",
+  "mem_total_mb": 15480,
+  "mem_available_mb": 14645.4,
+  "thp": "always [madvise] never",
+  "nic": "eth0=speed:-1,driver:unknown",
+  "os": "Linux 7.0.0-30-generic x86_64",
+  "caches": {
+   "L1d": "64 KiB (2 instances)",
+   "L1i": "64 KiB (2 instances)",
+   "L2": "8 MiB (2 instances)",
+   "L3": "32 MiB (1 instance)"
+  },
+  "flags": {
+   "avx2": "yes",
+   "avx512f": "no",
+   "fma": "yes",
+   "sha_ni": "yes",
+   "aes": "yes"
+  },
+  "block_devices": [
+   {
+    "name": "sr0",
+    "size_bytes": 184008704,
+    "type": "rom",
+    "transport": "ata",
+    "rotational_flag": "1",
+    "model": "QEMU DVD-ROM"
+   },
+   {
+    "name": "vda",
+    "size_bytes": 21474836480,
+    "type": "disk",
+    "transport": "virtio",
+    "rotational_flag": "1",
+    "model": null
+   },
+   {
+    "name": "vdb",
+    "size_bytes": 42949672960,
+    "type": "disk",
+    "transport": "virtio",
+    "rotational_flag": "1",
+    "model": null
+   }
+  ],
+  "filesystems": [
+   {
+    "device": "/dev/vda3",
+    "fstype": "ext4",
+    "size_bytes": 20467408896,
+    "used_bytes": 7635140608,
+    "avail_bytes": 11878731776,
+    "mount": "40%"
+   },
+   {
+    "device": "/dev/vda1",
+    "fstype": "vfat",
+    "size_bytes": 562999296,
+    "used_bytes": 6606848,
+    "avail_bytes": 556392448,
+    "mount": "2%"
+   },
+   {
+    "device": "/dev/vdb",
+    "fstype": "ext4",
+    "size_bytes": 41956900864,
+    "used_bytes": 25719648256,
+    "avail_bytes": 14072991744,
+    "mount": "65%"
+   }
+  ]
+ },
+ "disk": {
+  "datadisk": {
+   "hostcache_dd_line": "2147483648 bytes (2.1 GB, 2.0 GiB) copied, 0.490489 s, 4.4 GB/s",
+   "write_hostcache_mibps": 4400,
+   "write_mode": "fdatasync_persisted",
+   "write_dd_line": "2147483648 bytes (2.1 GB, 2.0 GiB) copied, 10.7841 s, 199 MB/s",
+   "seq_write_mibps": 199,
+   "cache_dropped": "yes",
+   "read_direct_error": "dd: IO error: Invalid input",
+   "read_mode": "cached_fallback",
+   "read_dd_line": "2147483648 bytes (2.1 GB, 2.0 GiB) copied, 10.2033 s, 210 MB/s",
+   "seq_read_mibps": 210,
+   "seq_mib": 2048,
+   "randread_block_kib": 4,
+   "randread_ops": 43350,
+   "randread_seconds": 10,
+   "randread_kiops": 4.335,
+   "randread_mibps": 16.933,
+   "fsync_bytes": 4096,
+   "fsync_count": 400,
+   "fsync_p50_ms": 0.251,
+   "fsync_p99_ms": 1.176,
+   "fsync_max_ms": 2.671
+  },
+  "root": {
+   "hostcache_dd_line": "1073741824 bytes (1.1 GB, 1.0 GiB) copied, 0.288627 s, 3.7 GB/s",
+   "write_hostcache_mibps": 3700,
+   "write_mode": "fdatasync_persisted",
+   "write_dd_line": "1073741824 bytes (1.1 GB, 1.0 GiB) copied, 5.39295 s, 199 MB/s",
+   "seq_write_mibps": 199,
+   "cache_dropped": "yes",
+   "read_direct_error": "dd: IO error: Invalid input",
+   "read_mode": "cached_fallback",
+   "read_dd_line": "1073741824 bytes (1.1 GB, 1.0 GiB) copied, 4.78721 s, 224 MB/s",
+   "seq_read_mibps": 224,
+   "seq_mib": 1024,
+   "fsync_bytes": 4096,
+   "fsync_count": 400,
+   "fsync_p50_ms": 1.725,
+   "fsync_p99_ms": 3.411,
+   "fsync_max_ms": 8.245
+  }
+ },
+ "memory": {
+  "total_mb": 15480,
+  "available_mb": 14645.4,
+  "copy1_bytes": 44023414784,
+  "copy1_gibps": 13.667,
+  "triad1_bytes": 46707769344,
+  "triad1_gibps": 14.5,
+  "copyall_threads": 4,
+  "copyall_bytes": 92341796864,
+  "copyall_gibps": 28.667,
+  "buffer_mb_per_stream": 512,
+  "seconds": 3,
+  "threads_all": 4
+ }
+}

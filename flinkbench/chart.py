@@ -941,13 +941,23 @@ def keyed_state_series(con):
     return out
 
 
-def render_keyed_state(con, out_path, run_note="", calib=None):
+def _keyed_machine_note(machine):
+    """Anchor the cardinality knee to the measured last-level cache size."""
+    caches = (machine.get("hardware") or {}).get("caches") or {}
+    l3 = caches.get("L3") or "未知"
+    return ("机器画像｜测量机为 KVM 虚拟机（非物理机），末级缓存 L3 = %s；"
+            "吞吐随键基数跌落的位置即工作集越过 L3 的区间，"
+            "基线 I/O 见报告「测量机画像与基线 I/O」。" % l3)
+
+
+def render_keyed_state(con, out_path, run_note="", calib=None, machine=None):
     """Cardinality sweep: throughput lines plus the RocksDB/HashMap cost ratio.
 
     `calib` carries the clock-calibration disclosure; when present, panel A
     states on the figure itself that the derived cycles/record is an estimate
     rather than a counter reading, which is the most easily misread number in
-    this stage.
+    this stage.  `machine` carries the measurement-box profile; its last-level
+    cache size anchors where the cardinality knee is expected.
     """
     from .terms import (KEYED_STATE_BACKENDS, KEYED_STATE_CARDINALITIES,
                         case_short_label)
@@ -1041,6 +1051,8 @@ def render_keyed_state(con, out_path, run_note="", calib=None):
     if run_note:
         fig.text(0.5, 0.928, run_note, ha="center", fontsize=8.8, color="#555555")
     footer = KEYED_STATE_FOOTER
+    if machine:
+        footer = footer + "\n" + _keyed_machine_note(machine)
     if calib and calib.get("ghz"):
         footer = _keyed_calib_note(calib) + "\n" + footer
     fig.text(0.5, 0.012, footer, ha="center", va="bottom", fontsize=7.4,

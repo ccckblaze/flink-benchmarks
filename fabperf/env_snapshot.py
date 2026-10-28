@@ -101,6 +101,70 @@ def free_memory():
     return ""
 
 
+def cpu_caches(lscpu_text=None):
+    """Last-level cache size in bytes; the cardinality knee is read against it."""
+    caches = {}
+    for line in (lscpu_text if lscpu_text is not None else lscpu()).splitlines():
+        match = re.match(r"(L\d[di]) cache:\s*(.+)", line.strip())
+        if match:
+            caches[match.group(1)] = match.group(2).strip()
+    return caches
+
+
+def cache_bytes(caches, name="L3"):
+    """Parse `32 MiB (1 instance)` style values down to per-instance bytes."""
+    value = caches.get(name, "")
+    match = re.search(r"([\d.]+)\s*(KiB|MiB|GiB|K\b|M\b|G\b)", value)
+    if not match:
+        return None
+    scale = {"KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3,
+             "K": 1000, "M": 1000 ** 2, "G": 1000 ** 3}[match.group(2)]
+    return int(float(match.group(1)) * scale)
+
+
+def virtualization(lscpu_text=None):
+    text = lscpu_text if lscpu_text is not None else lscpu()
+    vendor = lscpu_field("Hypervisor vendor", text)
+    kind = lscpu_field("Virtualization type", text)
+    return ("%s / %s" % (vendor, kind)).strip(" /") or "none (bare metal)"
+
+
+def block_devices():
+    rows = sh("lsblk -d -b -o NAME,SIZE,TYPE,TRAN,ROTA,MODEL").splitlines()
+    devices = []
+    for line in rows[1:]:
+        cols = line.split(None, 5)
+        if len(cols) >= 5:
+            devices.append({
+                "name": cols[0], "size_bytes": cols[1], "type": cols[2],
+                "transport": cols[3], "rotational_flag": cols[4],
+                "model": cols[5] if len(cols) > 5 else ""})
+    return devices
+
+
+def filesystems():
+    rows = sh("df -B1 -x tmpfs -x devtmpfs -x overlay").splitlines()
+    out = []
+    for line in rows[1:]:
+        cols = line.split()
+        if len(cols) >= 6:
+            out.append({"device": cols[0], "size_bytes": cols[1],
+                        "avail_bytes": cols[4], "mount": cols[5]})
+    return out
+
+
+def network():
+    nics = []
+    for path in sh("ls -d /sys/class/net/* 2>/dev/null").split():
+        name = path.rsplit("/", 1)[-1]
+        if name == "lo":
+            continue
+        speed = rd(path + "/speed")
+        nics.append({"name": name, "speed_mbps": speed if speed and speed != "-1"
+                     else "not exposed by hypervisor"})
+    return nics
+
+
 def allocator():
     java = sh("command -v java")
     if not java:
@@ -163,6 +227,12 @@ def main():
                     if re.search(r"cpu MHz\s*:\s*([\d.]+)", cpuinfo) else ""),
         "thp": rd("/sys/kernel/mm/transparent_hugepage/enabled"),
         "mem_free": free_memory(),
+        "virtualization": virtualization(lscpu_text),
+        "cpu_caches": cpu_caches(lscpu_text),
+        "l3_bytes": cache_bytes(cpu_caches(lscpu_text)),
+        "block_devices": block_devices(),
+        "filesystems": filesystems(),
+        "network": network(),
         "loadavg": rd("/proc/loadavg"),
         "uptime": sh("uptime -p"),
         "java": sh("java -version 2>&1"),
