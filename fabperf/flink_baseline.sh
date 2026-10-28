@@ -27,13 +27,13 @@ set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}
 CORE=${CORE:-0}
-FLINK_VERSION=${FLINK_VERSION:-2.3-SNAPSHOT}
+FLINK_VERSION=${FLINK_VERSION:-2.3.0}
 DATA_TMP=${DATA_TMP:-/mnt/datadisk0/fabperf/tmp}
 WARMUP=${WARMUP:-2}
 ITERATIONS=${ITERATIONS:-7}
 ITER_TIME=${ITER_TIME:-20s}
 XMX=${XMX:-4g}
-GROUPS=${GROUPS:-window state-memory state-rocks}
+BENCH_GROUPS=${BENCH_GROUPS:-window state-memory state-rocks}
 JAR=${JAR:-}
 ENV_ONLY=${ENV_ONLY:-0}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
@@ -43,7 +43,10 @@ cd "$REPO_DIR"
 mkdir -p "$OUT_DIR" "$DATA_TMP"
 
 # --- control variables --------------------------------------------------------
+# Captured before the SMT sibling goes offline: once it does, the topology files
+# shrink and the snapshot would describe the degraded machine, not the setup.
 SIBLINGS=$(cat "/sys/devices/system/cpu/cpu${CORE}/topology/thread_siblings_list")
+NPROC_TOTAL=$(nproc)
 CPUS=()
 IFS=',' read -ra PARTS <<< "$SIBLINGS"
 for part in "${PARTS[@]}"; do
@@ -74,9 +77,10 @@ fi
 snapshot_env() {
   python3 fabperf/env_snapshot.py --out "$OUT_DIR/env.json" --core "$CORE" \
     --flink-version "$FLINK_VERSION" --jar "${JAR:-pending}" \
+    --siblings "$SIBLINGS" --nproc-total "$NPROC_TOTAL" \
     --warmup "$WARMUP" --iterations "$ITERATIONS" --iter-time "$ITER_TIME" \
     --xmx "$XMX" --run-id "$RUN_ID" \
-    --note "Stage-1 single-core throughput baseline; groups: $GROUPS"
+    --note "Stage-1 single-core throughput baseline; groups: $BENCH_GROUPS"
 }
 snapshot_env
 
@@ -86,12 +90,21 @@ if [[ "$ENV_ONLY" == "1" ]]; then
 fi
 
 # --- jar ----------------------------------------------------------------------
+find_jar() {
+  # The shade plugin emits target/benchmarks.jar; older builds used the
+  # flink-benchmarks-*.jar name, so accept either.
+  if [[ -f target/benchmarks.jar ]]; then
+    echo target/benchmarks.jar
+  else
+    ls target/flink-benchmarks-*.jar 2>/dev/null | grep -v original | head -1 || true
+  fi
+}
 if [[ -z "$JAR" ]]; then
-  JAR=$(ls target/flink-benchmarks-*.jar 2>/dev/null | grep -v original | head -1 || true)
+  JAR=$(find_jar)
   if [[ -z "$JAR" ]]; then
     echo "building benchmarks jar against flink $FLINK_VERSION ..."
-    ./mvnw -q -DskipTests -Dflink.version="$FLINK_VERSION" package
-    JAR=$(ls target/flink-benchmarks-*.jar | grep -v original | head -1)
+    ./mvnw -q -DskipTests -Dflink.version="$FLINK_VERSION" -Drat.skip=true package
+    JAR=$(find_jar)
   fi
 fi
 [[ -f "$JAR" ]] || { echo "jar not found: $JAR" >&2; exit 1; }
@@ -106,12 +119,15 @@ run_group() {
     -foe true -f 1 -wi "$WARMUP" -i "$ITERATIONS" -w "$ITER_TIME" -r "$ITER_TIME" \
     -jvmArgs "-Xmx$XMX -XX:ActiveProcessorCount=1 -Djava.io.tmpdir=$DATA_TMP" \
     -rf csv -rff "$OUT_DIR/$name.csv" \
-    -rf json -rff "$OUT_DIR/$name.json" \
-    "$pattern" > "$OUT_DIR/$name.log" 2>&1
+    "$pattern" > "$OUT_DIR/$name.log" 2>&1 || {
+    echo "FAILED: $name" >&2
+    tail -20 "$OUT_DIR/$name.log" >&2
+    exit 1
+  }
   tail -4 "$OUT_DIR/$name.log"
 }
 
-for group in $GROUPS; do
+for group in $BENCH_GROUPS; do
   case "$group" in
     window)       run_group window "org.apache.flink.benchmark.WindowBenchmarks" ;;
     state-memory) run_group state-memory "org.apache.flink.benchmark.MemoryStateBackendBenchmark" ;;

@@ -19,7 +19,10 @@
 PERF_EXPERIMENT_PROPOSAL.md requires every leg to carry CPU model, pinning,
 governor, SMT state, THP, allocator, kernel cmdline, free memory and load, so
 a later cross-engine comparison can prove the two legs saw the same machine.
-All parsing happens here rather than in shell awk to keep the quoting honest.
+Parsing lives here rather than in shell awk to keep the quoting honest.  The
+sibling list and total core count must be passed in from the runner, captured
+*before* any SMT core is taken offline, otherwise the snapshot would describe
+the degraded machine rather than the configured one.
 """
 
 import argparse
@@ -46,34 +49,53 @@ def rd(path):
         return ""
 
 
-def lscpu_field(name):
-    text = sh("LC_ALL=C lscpu")
-    for line in text.splitlines():
+def lscpu():
+    return sh("LC_ALL=C lscpu")
+
+
+def lscpu_field(name, text=None):
+    for line in (text if text is not None else lscpu()).splitlines():
         if line.lower().startswith(name.lower() + ":"):
             return line.split(":", 1)[1].strip()
     return ""
 
 
-def cpu_model():
-    return lscpu_field("Model name") or platform.processor()
+def cpu_model(cpuinfo_text=""):
+    """Hypervisors often report a placeholder model; say so instead of lying."""
+    candidates = [
+        lscpu_field("Model name"),
+        (lambda text: re.search(r"model name\s*:\s*(.+)", text).group(1).strip()
+         if re.search(r"model name\s*:\s*(.+)", text) else "")(cpuinfo_text),
+        platform.processor(),
+    ]
+    for candidate in candidates:
+        if candidate and "general processor" not in candidate.lower():
+            return candidate
+    return "hypervisor hides the model (vCPU)"
 
 
-def smt_state(core):
-    siblings = rd("/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list" % core)
-    online = []
-    for part in re.split(r"[,-]", siblings):
-        if part.isdigit():
-            online.append(rd("/sys/devices/system/cpu/cpu%s/online" % part) or "?")
-    return siblings, online
+def siblings_of(core):
+    return rd("/sys/devices/system/cpu/cpu%s/topology/thread_siblings_list" % core)
+
+
+def sibling_online(siblings):
+    """Online flag per listed sibling; the boot cpu has no `online` file."""
+    states = []
+    for part in re.split(r"[,-]", siblings or ""):
+        if not part.isdigit():
+            continue
+        value = rd("/sys/devices/system/cpu/cpu%s/online" % part)
+        states.append("cpu%s=%s" % (part, value if value else "1 (boot cpu)"))
+    return states
 
 
 def free_memory():
-    text = sh("LC_ALL=C free -m")
-    for line in text.splitlines():
+    for line in sh("LC_ALL=C free -m").splitlines():
         cols = line.split()
         if cols and cols[0].lower().startswith("mem:"):
             try:
-                return "%s MB free / %s MB total" % (cols[3], cols[1])
+                return "%s MB available / %s MB free / %s MB total" % (
+                    cols[6], cols[3], cols[1])
             except IndexError:
                 return line
     return ""
@@ -83,8 +105,7 @@ def allocator():
     java = sh("command -v java")
     if not java:
         return "n/a"
-    real = sh("readlink -f %s" % java)
-    deps = sh("ldd %s" % real)
+    deps = sh("ldd %s" % sh("readlink -f %s" % java))
     for name in ("libjemalloc", "libmimalloc", "libc.so"):
         match = re.search(name + r"\S*", deps)
         if match:
@@ -96,6 +117,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--core", required=True)
+    ap.add_argument("--siblings", default="")
+    ap.add_argument("--nproc-total", default="")
     ap.add_argument("--flink-version", default="")
     ap.add_argument("--jar", default="")
     ap.add_argument("--warmup", default="")
@@ -106,19 +129,29 @@ def main():
     ap.add_argument("--note", default="")
     args = ap.parse_args()
 
-    siblings, sibling_online = smt_state(args.core)
+    cpuinfo = rd("/proc/cpuinfo")
+    siblings = args.siblings or siblings_of(args.core)
+    lscpu_text = lscpu()
     snap = {
         "run_id": args.run_id,
         "host": platform.node(),
         "date_utc": sh("date -u +%Y-%m-%dT%H:%M:%SZ"),
         "os": "%s %s" % (platform.system(), platform.release()),
-        "cpu_model": cpu_model(),
-        "nproc": sh("nproc"),
+        "cpu_model": cpu_model(cpuinfo),
+        "cpu_arch": lscpu_field("Architecture", lscpu_text),
+        "nproc_total": args.nproc_total or sh("nproc"),
+        "nproc_online": sh("nproc"),
         "core_pinned": args.core,
         "core_siblings": siblings,
-        "sibling_online": sibling_online,
-        "governor": rd("/sys/devices/system/cpu/cpu%s/cpufreq/scaling_governor" % args.core) or "n/a",
+        "sibling_online": sibling_online(siblings),
+        "governor": rd(
+            "/sys/devices/system/cpu/cpu%s/cpufreq/scaling_governor" % args.core) or "n/a",
+        "cstate_kernel_param": " ".join(
+            word for word in rd("/proc/cmdline").split()
+            if "cstate" in word or "pstate" in word),
         "cmdline": rd("/proc/cmdline"),
+        "cpu_mhz": (re.search(r"cpu MHz\s*:\s*([\d.]+)", cpuinfo).group(1)
+                    if re.search(r"cpu MHz\s*:\s*([\d.]+)", cpuinfo) else ""),
         "thp": rd("/sys/kernel/mm/transparent_hugepage/enabled"),
         "mem_free": free_memory(),
         "loadavg": rd("/proc/loadavg"),

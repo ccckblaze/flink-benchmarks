@@ -25,8 +25,10 @@ Flinkable 侧后续以同一批用例、同一台机器、同一套控制变量�
 
 ```bash
 # 本地构建 jar（Java 字节码跨平台，无需在测量机上跑 Maven）
+# 说明：Apache 快照仓库在国内直连只有个位数 KB/s，因此基线锁定已发布的
+# Flink 2.3.0（走 Maven Central 镜像），产物为 target/benchmarks.jar。
 cd flink-benchmarks
-./mvnw -DskipTests -Dflink.version=2.3-SNAPSHOT package
+./mvnw -DskipTests -Dflink.version=2.3.0 -Drat.skip=true package
 
 # 同步仓库 + jar 到测量机
 rsync -az --exclude .git --exclude 'fabperf/results' ./ <box>:~/flink-benchmarks/
@@ -56,10 +58,10 @@ python3 fabperf/summarize.py fabperf/results/<RUN_ID>
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `CORE` | `0` | 绑定的物理核；脚本自动下线其 SMT 兄弟核并在退出时恢复 |
-| `FLINK_VERSION` | `2.3-SNAPSHOT` | 与 flinkable 分支基线一致的 Flink 版本 |
+| `FLINK_VERSION` | `2.3.0` | 基线 Flink 版本（flinkable 分支基于 2.3-SNAPSHOT，发布版为其后继） |
 | `WARMUP` / `ITERATIONS` / `ITER_TIME` | `2` / `7` / `20s` | 提案要求 ≥7 次测量迭代，取 JMH 中位数与误差条 |
 | `XMX` | `4g` | 单 fork JVM 堆 |
-| `GROUPS` | `window state-memory state-rocks` | 可只跑子集 |
+| `BENCH_GROUPS` | `window state-memory state-rocks` | 可只跑子集 |
 | `JAR` | 自动探测/构建 | 指定已构建 jar |
 | `DATA_TMP` | `/mnt/datadisk0/fabperf/tmp` | RocksDB/临时文件放数据盘，避免污染系统盘 |
 | `ENV_ONLY` | `0` | 置 `1` 只写环境快照 |
@@ -69,5 +71,5 @@ python3 fabperf/summarize.py fabperf/results/<RUN_ID>
 - **单核结论**：Stage 1 只测单核算子吞吐，不代表集群整体扩展性；多核/网络/反压另议。
 - **尾延迟未做**：Stage 2 需要核隔离的独占机器，当前测量机（4 vCPU 云主机）不满足条件，P99.9/P99.99 暂不出数。
 - **崩溃恢复未做**：Stage 3 需要分布式部署 + failover 注入，尚未接入。
-- **版本**：基线为 Flink `2.3-SNAPSHOT`（flinkable 分支的基线版本）。Flinkable 补测时必须是同一台机器、同一 `CORE`、同一 SMT 状态，否则不列入对比。
+- **版本**：基线为 Flink `2.3.0` 发布版；flinkable 分支基线为 `2.3-SNAPSHOT`，两者同属 2.3 线，差异需在结论中注明。Flinkable 补测时必须是同一台机器、同一 `CORE`、同一 SMT 状态，否则不列入对比。
 - **平手判定**：跨引擎差异 < ±5% 视为平手，不做「反超」渲染。

@@ -95,9 +95,11 @@ def main():
         lines += ["## 测量环境（控制变量）", "", "| 项 | 值 |", "| --- | --- |"]
         order = [
             ("run_id", "Run ID"), ("host", "机器"), ("date_utc", "时间 (UTC)"),
-            ("os", "系统"), ("cpu_model", "CPU"), ("nproc", "逻辑核数"),
+            ("os", "系统"), ("cpu_model", "CPU"), ("cpu_arch", "架构"),
+            ("nproc_total", "逻辑核数（配置）"), ("nproc_online", "逻辑核数（在线）"),
             ("core_pinned", "绑核"), ("core_siblings", "同物理核兄弟"),
-            ("sibling_online", "兄弟核在线状态"), ("governor", "调频策略"),
+            ("sibling_online", "兄弟核在线状态"), ("cpu_mhz", "主频"),
+            ("governor", "调频策略"), ("cstate_kernel_param", "C-state 内核参数"),
             ("thp", "透明大页"), ("mem_free", "内存"), ("loadavg", "负载"),
             ("allocator", "内存分配器"), ("flink_version", "Flink 版本"),
             ("jar", "jar"), ("note", "说明"),
@@ -107,6 +109,7 @@ def main():
                 value = env[key]
                 if isinstance(value, list):
                     value = " ".join(str(v) for v in value)
+                value = str(value).replace("\n", " / ")
                 lines.append("| %s | %s |" % (label, value))
         jmh = env.get("jmh") or {}
         if jmh:
