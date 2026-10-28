@@ -266,6 +266,13 @@ MEASURED_PATTERNS = [
      lambda m: [("backpressure_park", "wake_ns", m[0], "ns", LB),
                 ("backpressure_park", "parked_ns", m[1], "ns", LB),
                 ("backpressure_park", "rss_parked_mb", m[2], "MB", LB)]),
+    # M151: the async network producer parks on the availability Notify while
+    # the budget is full; the wake crosses a real socket flush, so the latency
+    # is higher than the in-process park but RSS stays flat at the baseline.
+    (r"BP\|tcp_park\|size=\d+\|wake_ns=([\d.]+)\|parked_ns=([\d.]+)\|rss_parked_mb=([\d.]+)",
+     lambda m: [("backpressure_tcp_park", "wake_ns", m[0], "ns", LB),
+                ("backpressure_tcp_park", "parked_ns", m[1], "ns", LB),
+                ("backpressure_tcp_park", "rss_parked_mb", m[2], "MB", LB)]),
     (r"BP\|exchange\|records=\d+\|size=\d+\|accepted=\d+\|refused=(\d+)\|queued_mb=([\d.]+)\|push_ns=([\d.]+)\|rss_base_mb=([\d.]+)\|rss_mb=([\d.]+)",
      lambda m: [("backpressure_channel", "refused", m[0], "records", LB),
                 ("backpressure_channel", "backlog_mb", m[1], "MB", LB),

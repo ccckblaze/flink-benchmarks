@@ -62,6 +62,7 @@ CASE_LABELS = {
     "backpressure_channel_capped": "反压：任务间通道停读（预算封顶）",
     "backpressure_union_capped": "反压：多输入归并·一慢（预算封顶）",
     "backpressure_park": "反压：生产者阻塞唤醒（预算满时停读）",
+    "backpressure_tcp_park": "反压：网络生产者异步停读唤醒（预算满时）",
     "memory_embedded_python": "嵌入式 Python 内存构成",
     "rss_base_mb": "基线常驻内存 RSS",
     "rss_queued_mb": "入队后常驻内存 RSS",

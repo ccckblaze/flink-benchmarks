@@ -198,6 +198,31 @@ def generate(con, out_dir, title, env_lines):
                       "腾出预算后 44µs 唤醒、停读期间 RSS 持平基线——一个满队列就此逐级回传为端到端反压。"
                       "未封顶形状排空后 RSS 是否回落取决于分配器能否归还"
                       "连续空闲块（归并/广播回落，停读/倾斜部分保留），属碎片而非泄漏。" + interp_note]
+
+    # M151: end-to-end backpressure — the producer-side park, priced for both
+    # the in-process edge and the network data plane. These are latency/flatness
+    # numbers, not an RSS decomposition, so they get their own table.
+    park_rows = []
+    for engine, case in (("进程内边（Exchange/链尾）", "backpressure_park"),
+                         ("网络数据面（shuffle TCP）", "backpressure_tcp_park")):
+        if not _has_case(con, case):
+            continue
+        park_rows.append((engine, _maybe(con, case, "wake_ns"),
+                          _maybe(con, case, "rss_parked_mb")))
+    if park_rows:
+        lines += ["", "## 端到端反压：生产者停读唤醒", "",
+                  "| 边类型 | 预算腾出后唤醒（µs） | 停读期间 RSS（MB） |",
+                  "| --- | --- | --- |"]
+        for engine, wake, rss in park_rows:
+            cell = lambda v, fmt="%.0f": ("—" if v is None else fmt % v)
+            lines.append("| %s | %s | %s |" % (
+                engine, cell(None if wake is None else wake / 1000.0), cell(rss, "%.1f")))
+        lines += ["", "口径：预算满时生产者不再自旋重试，而是在 emit 内挂起（进程内边 `push_blocking`"
+                      " 用 `Condvar`；网络边 `produce_ready` 用 tokio `Notify`，异步侧不占线程），"
+                      "忠实 `LocalBufferPool.requestBufferBuilderBlocking`。唤醒延迟 = 消费者排空一个缓冲、"
+                      "预算腾出、到生产者恢复推入的往返；网络边含一次 socket flush 故高于进程内边。"
+                      "停读期间 RSS 持平基线，正说明满队列被封顶在预算内、逐级回传为端到端反压，"
+                      "而非在引擎里无界堆积。"]
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(
         "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()
