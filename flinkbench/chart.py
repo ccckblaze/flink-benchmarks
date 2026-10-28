@@ -150,10 +150,12 @@ BP_SHAPES = [
         ("backpressure_union_capped", False),
         ("backpressure_union_gates_jvm", True)]),
 ]
-BP_TITLE = "⑦ 缓冲队列类反压：双方均按预算运行（对下标签＝引擎·预算态；左停读·右排空）"
+BP_TITLE = ("⑦ 缓冲队列类反压：双方均按预算运行\n"
+            "左对柱＝Flinkable · 右对柱＝Flink｜对内：左=停读峰值 右=排空终值")
 
 
-def _bp_panel(ax, con, groups, title, no_legend=False, legend_below=False):
+def _bp_panel(ax, con, groups, title, no_legend=False, legend_below=False,
+              show_tags=True):
     # M148: one figure per backpressure family. Every engine inside a group
     # gets an adjacent pair of absolute-RSS bars — left bar is the peak while
     # the consumer is stalled, right bar is the RSS once it drained — so the
@@ -219,13 +221,14 @@ def _bp_panel(ax, con, groups, title, no_legend=False, legend_below=False):
                             ha="center", fontsize=6.5, color=BP_RED)
             else:
                 ax.text(x1, top + 4, "已回落", ha="center", fontsize=6.5, color=BP_GREEN)
-            tag = _bp_engine_tag(case, jvm)
-            ax.annotate(tag, (pair_mid, 0.0), xycoords=("data", "axes fraction"),
-                        xytext=(0, 3), textcoords="offset points", ha="center", va="bottom",
-                        fontsize=6.5, fontweight="bold",
-                        color=BP_PURPLE if (jvm or case.endswith("_jvm")) else BLUE,
-                        bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="#bbb", lw=0.5,
-                                  alpha=0.92))
+            if show_tags:
+                tag = _bp_engine_tag(case, jvm)
+                ax.annotate(tag, (pair_mid, 0.0), xycoords=("data", "axes fraction"),
+                            xytext=(0, 3), textcoords="offset points", ha="center", va="bottom",
+                            fontsize=6.5, fontweight="bold",
+                            color=BP_PURPLE if (jvm or case.endswith("_jvm")) else BLUE,
+                            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="#bbb", lw=0.5,
+                                      alpha=0.92))
             peak_max = max(peak_max, peak)
     for g in range(1, len(groups)):
         ax.axvline(g - 0.5, color="#e2e2e2", lw=0.8, zorder=0)
@@ -244,8 +247,7 @@ def _bp_panel(ax, con, groups, title, no_legend=False, legend_below=False):
     ax.set_xticks(range(len(groups)), [g[0] for g in groups])
     ax.tick_params(axis="x", labelsize=6.5)
     ax.set_ylabel("进程常驻内存 RSS（MB，绝对值）", fontsize=8)
-    ax.set_title(title + "\n（每对柱：左=停读峰值 · 右=排空终值；对下白框=所属引擎）",
-                 fontsize=8.5, pad=40 if legend_below else 4)
+    ax.set_title(title, fontsize=8.5, pad=40 if legend_below else 4)
     legend_corner = "upper right" if peak_max < 300 else "upper left"
     if legend_below:
         # M157: at cell width the under-axis legend collided with the shape
@@ -319,15 +321,15 @@ def render(con, out_path, title):
                 word = "Flinkable 快 %.2f 倍" % ratio[0] if ratio[0] >= 1 else "Flinkable 慢 %.2f 倍" % (1 / ratio[0])
                 # The empty column between the two bars, at the mean of their tops: a
                 # shared top row collides with the legend, a per-bar row with the value labels.
-                ax.annotate(word, (i, (native[i] + jvm[i]) / 2), ha="center", fontsize=9,
+                ax.annotate(word, (i, max(native[i], jvm[i]) * 1.48), ha="center", fontsize=9,
                             color=BLUE if ratio[0] >= 1 else "#a33",
                             bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
             ax.set_xticks(list(x), groups)
             ax.set_ylabel("每记录往返耗时（纳秒，越低越好）")
-            ax.set_title("① 序列化 / 反序列化往返（字节格式与 Flink 原版完全一致，逐字节校验；"
-                         "同一会话并列）", fontsize=10)
-            ax.legend(fontsize=8, loc="upper right")
-            ax.set_ylim(0, max(native + jvm) * 1.28)
+            ax.set_title("① 序列化 / 反序列化往返（同一会话并列）\n"
+                         "字节格式与 Flink 原版完全一致 · 逐字节校验", fontsize=9)
+            ax.legend(fontsize=8, loc="upper left")
+            ax.set_ylim(0, max(native + jvm) * 1.66)
         elif panel == "smallbatch":
             batches = ["16", "128", "1024", "8192"]
             l2 = [_latest(con, "smallbatch_" + b, "l2_zero_copy")[0] for b in batches]
@@ -400,13 +402,16 @@ def render(con, out_path, title):
             ax.legend(fontsize=7.5, loc="upper right")
             ax.set_ylim(0, max(after + jvm) * 1.42)
         elif panel == "backpressure":
-            _bp_panel(ax, con, BP_SHAPES, BP_TITLE, legend_below=True)
+            _bp_panel(ax, con, BP_SHAPES, BP_TITLE, legend_below=True,
+                       show_tags=False)
         elif panel == "backpressure_release":
             _bp_panel(ax, con, [
                 ("非对齐检查点\n（在途数据快照）", [("backpressure_capture", False),
                                         ("backpressure_capture_jvm", True)]),
                 ("Python 算子停读\n（Flinkable 嵌入式）", [("backpressure_python", False)]),
-            ], "⑧ 检查点与 Python 算子：排空前 vs 排空后的绝对 RSS", no_legend=True)
+            ], "⑧ 检查点与 Python 算子：排空前 vs 排空后的绝对 RSS\n"
+            "左对柱＝Flinkable · 右对柱＝Flink（仅一对时为 Flinkable）｜对内：左=峰值 右=终值",
+            no_legend=True, show_tags=False)
         elif panel == "memory":
             if _has(con, "memory_jm_rss"):
                 # M131: the standardized distributed deployment — one JobManager plus one
@@ -476,26 +481,12 @@ def render(con, out_path, title):
                                label="其它 Python 开销")
                     for x, (t, m) in enumerate(zip(tops, mids)):
                         ax.annotate("JM %.0f" % t, (x, t / 2), ha="center", fontsize=8, color="white")
-                        if x == 2:
-                            ax.annotate("TM %.1f" % m, (x, t + m),
-                                        xytext=(30, 16), textcoords="offset points",
-                                        ha="left", fontsize=8, color=BLUE,
-                                        arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
-                        elif x == 3 and fab_py_split is not None:
-                            ax.annotate("Flinkable 内核 %.1f" % m, (x, t + m),
-                                        xytext=(28, 14), textcoords="offset points",
-                                        ha="left", fontsize=8, color=BLUE,
-                                        arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
+                        if x == 3 and fab_py_split is not None:
                             interp_share, libs_share, other_share = fab_py_split
                             base3 = t + m
-                            ax.annotate("解释器 %.0f" % interp_share, (x, base3 + interp_share / 2),
-                                        ha="center", va="center", fontsize=7.5, color="white")
-                            ax.annotate("库 %.0f" % libs_share, (x, base3 + interp_share + libs_share / 2),
-                                        ha="center", va="center", fontsize=7.5, color="white")
-                            if other_share >= 12:
-                                ax.annotate("其它 %.0f" % other_share,
-                                            (x, base3 + interp_share + libs_share + other_share / 2),
-                                            ha="center", va="center", fontsize=7.5, color="#333")
+                            py_tot = interp_share + libs_share + other_share
+                            ax.annotate("PY %.0f" % py_tot, (x, base3 + py_tot / 2),
+                                        ha="center", va="center", fontsize=8, color="white")
                         elif x == 3:
                             ax.annotate("TM %.0f" % m, (x, t + m / 2), ha="center", fontsize=8, color="white")
                         else:
@@ -513,38 +504,34 @@ def render(con, out_path, title):
                            color=[GRAY, BLUE], label="TaskManager")
                     for x, (t, m) in enumerate(zip(tops, mids)):
                         ax.annotate("JM %.0f" % t, (x, t / 2), ha="center", fontsize=8, color="white")
-                        if x == len(cats) - 1:
-                            ax.annotate("TM %.1f" % m, (x, t + m),
-                                        xytext=(30, 16), textcoords="offset points",
-                                        ha="left", fontsize=8, color=BLUE,
-                                        arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
-                        else:
+                        if x < len(cats) - 1:
                             ax.annotate("TM %.0f" % m, (x, t + m / 2), ha="center", fontsize=8, color="white")
+                # M158: the percentage rides on the Flinkable bars' totals —
+                # no floating summary block, no leader-line annotations.
                 for x, tot in enumerate(totals):
-                    ax.annotate("%.0f MB" % tot, (x, tot * 1.015), ha="center", fontsize=9)
-                if has_py:
-                    lines = ["总占用",
-                             "Java 作业：较 Flink −%.0f%%" % (100.0 * (1 - totals[2] / totals[0]))]
-                    if has_fab_py:
-                        lines.append("Python 作业：较 PyFlink −%.0f%%" % (100.0 * (1 - totals[3] / totals[1])))
+                    if has_py and x == 2:
+                        txt = "%.0f MB\nTM %.1f · −%.0f%%" % (tot, mids[2],
+                                                               100.0 * (1 - tot / totals[0]))
+                    elif has_py and x == 3:
+                        txt = "%.0f MB\n较 PyFlink −%.0f%%" % (tot, 100.0 * (1 - tot / totals[1]))
+                    elif not has_py and x == 1:
+                        txt = "%.0f MB\n较 Flink −%.0f%%" % (tot, 100.0 * (1 - tot / totals[0]))
                     else:
-                        lines.append("较 PyFlink −%.0f%%" % (100.0 * (1 - totals[2] / totals[1])))
-                    ax.annotate("\n".join(lines), (0.02, max(totals) * 1.20),
-                        ha="left", va="top", fontsize=8.5, color=BLUE,
-                        bbox=dict(boxstyle="round,pad=0.24", fc="white", ec="none", alpha=0.9))
-                else:
-                    ax.annotate("总占用 −%.0f%%" % (100.0 * (1 - totals[1] / totals[0])),
-                                (0.5, max(totals) * 1.1), ha="center", fontsize=9, color=BLUE,
-                                bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
+                        txt = "%.0f MB" % tot
+                    lx = x - (0.10 if x == len(totals) - 1 else 0)
+                    ax.annotate(txt, (lx, tot), ha="center", va="bottom",
+                                xytext=(0, 3 if "\n" not in txt else 8),
+                                textcoords="offset points", fontsize=8.5,
+                                color=BLUE if "\n" in txt else "black")
                 ax.set_ylabel("常驻内存 RSS（MB，越低越好）")
                 ax.set_title("④ 分布式部署内存（1 JM + 1 TM，WordCount 5.5 GB 运行中）",
-                             fontsize=9.5, pad=42)
+                             fontsize=9.5, pad=56)
                 # M157: legend above the axes with short labels — the long
                 # per-process descriptions collided in two columns at cell
                 # width (they live in the report table now).
                 ax.legend(fontsize=6.5, loc="lower left",
-                          bbox_to_anchor=(0.0, 1.005, 1.0, 0.16), mode="expand",
-                          ncol=5, framealpha=1.0, columnspacing=0.9,
+                          bbox_to_anchor=(0.0, 1.005, 1.0, 0.30), mode="expand",
+                          ncol=3, framealpha=1.0, columnspacing=0.9,
                           handlelength=1.2, handletextpad=0.4)
                 ax.set_ylim(0, max(totals) * 1.22)
             else:
@@ -583,8 +570,8 @@ def render(con, out_path, title):
                 # the row total, now counted from the message headers. The
                 # count lane rides in the title: the plot body stays collision-free.
                 cnt = _latest(con, "serde_bulk4_count", "flinkable")[0]
-                title5 = ("⑤ 列式帧编解码往返（同一契约两引擎）· 泵计数道 %.2f ns/记录" % cnt) + \
-                         "（全解码的 1/%.0f）" % (total / cnt)
+                title5 = ("⑤ 列式帧编解码往返（同一契约两引擎）\n"
+                          "泵计数道 %.2f ns/记录 · 全解码的 1/%.0f" % (cnt, total / cnt))
             ax.set_title(title5, fontsize=9.5)
             ax.legend(fontsize=7.5, loc="upper left")
             ax.set_ylim(0, max(total, py) * 1.3)
