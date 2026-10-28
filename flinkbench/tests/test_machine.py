@@ -59,6 +59,21 @@ class MachineRowsTest(unittest.TestCase):
         self.assertIn("KVM", note)
 
 
+class MachineProfileFigureTest(unittest.TestCase):
+    def test_renders_and_returns_path(self):
+        import tempfile
+        from flinkbench import chart
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "machine_profile.png")
+            self.assertEqual(chart.render_machine_profile(FIXTURE, out), out)
+            self.assertGreater(os.path.getsize(out), 20000)
+
+    def test_empty_capture_returns_none(self):
+        from flinkbench import chart
+        self.assertIsNone(chart.render_machine_profile(
+            {"hardware": {}, "disk": {}, "memory": {}}, "/tmp/should-not-exist.png"))
+
+
 class EnvSnapshotCacheTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -184,9 +184,11 @@ def _machine_baseline():
             continue
         try:
             with open(path) as handle:
-                return json.load(handle), path
+                data = json.load(handle)
         except (OSError, ValueError):
             continue
+        if isinstance(data, dict) and (data.get("disk") or data.get("memory")):
+            return data, path
     return None, None
 
 
@@ -595,7 +597,12 @@ def generate(con, out_dir, title, env_lines):
                       "**与本组互为印证的两处交叉校验**："] + _cross_checks(con)
         machine, _machine_path = _machine_baseline()
         if machine:
-            lines += ["", "## 测量机画像与基线 I/O", ""] + _machine_rows(machine)
+            lines += ["", "## 测量机画像与基线 I/O", ""]
+            machine_png = chart.render_machine_profile(
+                machine, os.path.join(out_dir, "machine_profile.png"))
+            if machine_png:
+                lines += ["![测量机画像与基线 I/O](%s)" % os.path.basename(machine_png), ""]
+            lines += _machine_rows(machine)
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(
         "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()

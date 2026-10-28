@@ -950,6 +950,179 @@ def _keyed_machine_note(machine):
             "基线 I/O 见报告「测量机画像与基线 I/O」。" % l3)
 
 
+RED = "#8a2a2a"
+
+
+def render_machine_profile(machine, out_path):
+    """Measurement-box profile and its baseline I/O as one figure.
+
+    The descriptive findings that used to live only in the report text are
+    rendered here: the box is a KVM guest with a masked CPU model, the
+    O_DIRECT write leg is host-cache acceptance rather than persisted
+    throughput, and the single-thread memory bandwidth already saturates a
+    large share of the all-thread ceiling.  Every number is filled from the
+    captured JSON via _fill, never hard-coded.
+    """
+    hw = machine.get("hardware", {})
+    disk = machine.get("disk", {})
+    mem = machine.get("memory", {})
+    if not disk and not mem:
+        return None
+    caches = hw.get("caches", {})
+    l3 = caches.get("L3", "—")
+
+    def num(v):
+        return v if isinstance(v, (int, float)) else None
+
+    dd = disk.get("datadisk", {})
+    rt = disk.get("root", {})
+
+    fig = plt.figure(figsize=(14.0, 6.6))
+    gs = GridSpec(1, 3, figure=fig, width_ratios=[1.30, 1.15, 0.85],
+                  left=0.045, right=0.975, top=0.865, bottom=0.155, wspace=0.30)
+
+    # ---- panel A: profile card -------------------------------------------------
+    ax = fig.add_subplot(gs[0, 0])
+    ax.axis("off")
+    ax.set_title("机器画像｜测量机（guest 视角）", fontsize=11.5, fontweight="bold",
+                 loc="left", pad=10)
+
+    def cache_short(txt):
+        import re as _re
+        match = _re.match(r"([\d.]+ \w+B) \((\d+) instance", txt or "")
+        return "%s×%s" % (match.groups()) if match else (txt or "—")
+
+    devs = {d.get("name"): d for d in hw.get("block_devices", [])
+            if d.get("type") == "disk"}
+    dev_txt = "、".join("%s %.0f GiB" % (n, float(d.get("size_bytes") or 0) / 2 ** 30)
+                        for n, d in sorted(devs.items())) or "—"
+    flags = hw.get("flags", {})
+    simd = "AVX2 %s · AVX-512 %s" % (
+        "可用" if flags.get("avx2") == "yes" else "不可用",
+        "不可用" if flags.get("avx512f") != "yes" else "可用")
+    thp = (hw.get("thp") or "—").split("[")[-1].split("]")[0] if "[" in (hw.get("thp") or "") else "—"
+    lines = [
+        ("虚拟化", "%s / %s —— 虚拟机，不是物理机" % (
+            hw.get("hypervisor", "—"), hw.get("virtualization_type", "—"))),
+        ("CPU", "型号被 hypervisor 遮蔽（按 flags 判为 EPYC 系）"),
+        ("拓扑", "插槽 %s × 每核线程 %s = 在线 vCPU %s" % (
+            hw.get("sockets", "—"), hw.get("threads_per_core", "—"), hw.get("nproc", "—"))),
+        ("缓存", "L1d %s · L2 %s · 末级 L3 = %s" % (
+            cache_short(caches.get("L1d")), cache_short(caches.get("L2")),
+            cache_short(l3))),
+        ("内存", "总 %s MiB · THP 生效档 %s" % (hw.get("mem_total_mb", "—"), thp)),
+        ("块设备", "%s（virtio；rotational 标志为前端伪装）" % dev_txt),
+        ("指令集", "%s——SIMD 路线按 AVX2 设计" % simd),
+        ("网络", "速率被 hypervisor 隐藏，集群腿不可据此估带宽"),
+    ]
+    y = 0.98
+    for key, value in lines:
+        ax.text(0.0, y, key, fontsize=9.2, fontweight="bold", va="top", color="#222222")
+        ax.text(0.15, y, value, fontsize=8.5, va="top", color="#333333")
+        y -= 0.115
+
+    l3_short = cache_short(l3)
+    knee = _fill("拐点锚｜10 万键工作集驻留 L3（%s）、100 万键越出 L3\n"
+                 "——即 keyed_state.png 左图的吞吐跌落段" % l3_short, {})
+    fig.text(0.045, 0.138, knee, fontsize=8.4, va="top", ha="left", color=ORANGE,
+             linespacing=1.45,
+             bbox=dict(boxstyle="round,pad=0.45", facecolor="#fdf3ec",
+                       edgecolor="#d9a27a", alpha=0.97))
+
+    # ---- panel B: disk baseline -------------------------------------------------
+    ax2 = fig.add_subplot(gs[0, 1])
+    cats = ["顺序写\n（fdatasync 落盘）", "顺序读\n（缓存清空后）", "顺序写\n（O_DIRECT 不落盘）"]
+    vdb = [num(dd.get("seq_write_mibps")), num(dd.get("seq_read_mibps")),
+           num(dd.get("write_hostcache_mibps"))]
+    vda = [num(rt.get("seq_write_mibps")), num(rt.get("seq_read_mibps")),
+           num(rt.get("write_hostcache_mibps"))]
+    xs = range(len(cats))
+    w = 0.36
+    b1 = ax2.bar([x - w / 2 for x in xs], [v if v else 0 for v in vdb], w,
+                 color=BLUE, label="数据盘 vdb（/mnt/datadisk0）")
+    b2 = ax2.bar([x + w / 2 for x in xs], [v if v else 0 for v in vda], w,
+                 color=GRAY, label="系统盘 vda3（/）")
+    for bars in (b1, b2):
+        for rect in bars:
+            h = rect.get_height()
+            if h > 0:
+                ax2.text(rect.get_x() + rect.get_width() / 2, h, "%.0f" % h,
+                         ha="center", va="bottom", fontsize=8.6)
+    if vdb[2] and vdb[0]:
+        ax2.annotate(_fill("不落盘口径虚高 {ratio} 倍\n（字节进宿主缓存即返回）",
+                           {"ratio": "%.0f" % (vdb[2] / vdb[0])}),
+                     xy=(2, max(vdb[2], vda[2] or 0) * 1.01),
+                     xytext=(0.62, max(vdb[2], vda[2] or 0) * 0.60),
+                     fontsize=8.3, color=RED, ha="left", linespacing=1.4,
+                     arrowprops=dict(arrowstyle="->", color=RED, alpha=0.8))
+    rand = num(dd.get("randread_kiops"))
+    extra = []
+    if rand:
+        extra.append("4 KiB 随机读（O_DIRECT）：%.2f Kiops" % rand)
+    p50v, p50r = num(dd.get("fsync_p50_ms")), num(rt.get("fsync_p50_ms"))
+    if p50v and p50r:
+        extra.append("fsync p50：vdb %.2f ms / vda3 %.2f ms" % (p50v, p50r))
+    if extra:
+        ax2.text(0.02, 0.40, "\n".join(extra), fontsize=8.4, va="top",
+                 transform=ax2.transAxes, color="#333333",
+                 bbox=dict(boxstyle="round,pad=0.4", facecolor="#f4f6fa",
+                           edgecolor="#c6cede", alpha=0.97))
+    ax2.set_xticks(list(xs))
+    ax2.set_xticklabels(cats, fontsize=8.8)
+    ax2.set_ylabel("MiB/s", fontsize=10)
+    ax2.set_ylim(0, max([v for v in vdb + vda if v] or [1]) * 1.22)
+    ax2.set_title("磁盘基线｜落盘 vs 不落盘必须分开看", fontsize=11.5,
+                  fontweight="bold", loc="left", pad=10)
+    ax2.legend(fontsize=8.6, loc="upper left", framealpha=0.97)
+    ax2.grid(axis="y", alpha=0.25)
+    ax2.set_axisbelow(True)
+
+    # ---- panel C: memory bandwidth ----------------------------------------------
+    ax3 = fig.add_subplot(gs[0, 2])
+    labels = ["单线程\ncopy", "单线程\ntriad", "全部 %s 线程\n并发 copy" % mem.get("copyall_threads", "n")]
+    vals = [num(mem.get("copy1_gibps")), num(mem.get("triad1_gibps")),
+            num(mem.get("copyall_gibps"))]
+    if any(vals):
+        bars = ax3.bar(range(3), [v if v else 0 for v in vals], 0.55,
+                       color=[ORANGE, "#d98e5f", BLUE])
+        for rect in bars:
+            h = rect.get_height()
+            if h > 0:
+                ax3.text(rect.get_x() + rect.get_width() / 2, h, "%.1f" % h,
+                         ha="center", va="bottom", fontsize=9)
+        share = _fill("单线程 copy 已达\n并发总带宽的 {pct}%——\n访存墙与此上限互证",
+                      {"pct": ("%.0f" % (vals[0] * 100.0 / vals[2]))
+                       if vals[0] and vals[2] else "—"})
+        ax3.text(0.02, 0.97, share, fontsize=8.3, va="top", linespacing=1.4,
+                 transform=ax3.transAxes, color="#333333",
+                 bbox=dict(boxstyle="round,pad=0.4", facecolor="#f4f6fa",
+                           edgecolor="#c6cede", alpha=0.97))
+        ax3.set_xticks(range(3))
+        ax3.set_xticklabels(labels, fontsize=8.8)
+        ax3.set_ylabel("GiB/s", fontsize=10)
+        ax3.set_ylim(0, max([v for v in vals if v] or [1]) * 1.30)
+    else:
+        ax3.axis("off")
+        ax3.text(0.0, 0.9, "内存带宽未采集", fontsize=10, va="top")
+    ax3.set_title("内存带宽｜512 MiB/流缓冲，远超各级缓存", fontsize=11.5,
+                  fontweight="bold", loc="left", pad=10)
+    ax3.grid(axis="y", alpha=0.25)
+    ax3.set_axisbelow(True)
+
+    footer = _fill(
+        "口径｜全部数字来自 machine_baseline.sh 现场采集（run {gen}），工具为 dd 与自编译 C 探针"
+        "（本机无 fio/sysbench/mlc）。这是这台 KVM 虚拟机当下可交付的水平：云盘自带速率配额，"
+        "数字不代表宿主机或盘的物理上限；O_DIRECT 读被 virtio 拒绝（Invalid input），"
+        "顺序读为 drop_caches 之后的缓冲读。", {"gen": machine.get("generated_utc", "—")})
+    fig.text(0.5, 0.014, footer, ha="center", va="bottom", fontsize=7.6,
+             color="#666666", wrap=True)
+    fig.suptitle("测量机画像与基线 I/O｜键基数拐点的硬件锚",
+                 fontsize=13, fontweight="bold", y=0.985)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+    return out_path
+
+
 def render_keyed_state(con, out_path, run_note="", calib=None, machine=None):
     """Cardinality sweep: throughput lines plus the RocksDB/HashMap cost ratio.
 
