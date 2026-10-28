@@ -22,6 +22,14 @@ Internal ledger slang never reaches a report through this table.
 """
 
 CASE_LABELS = {
+    "globalWindow": "窗口聚合：全局窗口",
+    "tumblingWindow": "窗口聚合：滚动窗口",
+    "slidingWindow": "窗口聚合：滑动窗口",
+    "sessionWindow": "窗口聚合：会话窗口",
+    "stateBackends.MEMORY": "状态后端：堆内 + JM 检查点",
+    "stateBackends.FS": "状态后端：堆内 + 文件系统检查点",
+    "stateBackends.ROCKS": "状态后端：RocksDB（全量检查点）",
+    "stateBackends.ROCKS_INC": "状态后端：RocksDB（增量检查点）",
     "serde_int_long": "序列化往返：定长字段（整数+长整数）",
     "serde_string": "序列化往返：字符串（含构造）",
     "serde_string_full": "序列化往返：字符串（全链条：构造+编解码）",
@@ -156,6 +164,8 @@ METRIC_LABELS = {
 }
 
 UNIT_LABELS = {
+    "ops/ms": "次/毫秒",
+    "ops/s": "次/秒",
     "ns/row": "纳秒/记录",
     "ns/rec": "纳秒/记录",
     "ns/cell": "纳秒/字段",

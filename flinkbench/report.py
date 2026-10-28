@@ -24,6 +24,12 @@ same-screen chart embedded. Terminology always goes through `terms.py`.
 from . import chart, regression
 from .terms import case_label, metric_label, unit_label
 
+STAGE1_ORDER = [
+    "globalWindow", "tumblingWindow", "slidingWindow", "sessionWindow",
+    "stateBackends.MEMORY", "stateBackends.FS", "stateBackends.ROCKS",
+    "stateBackends.ROCKS_INC",
+]
+
 ORDER = [
     "serde_int_long", "serde_string",
     "smallbatch_16", "smallbatch_128", "smallbatch_1024", "smallbatch_8192",
@@ -49,6 +55,18 @@ def _latest_rows(con):
     return rows
 
 
+def _stage1_cases(con):
+    """Cases whose latest value came from an official JMH run (stage-1).
+
+    They are a single-engine baseline, not a cross-engine pair, so they must
+    not sit in the comparison matrix - a lone Flink row there would invite a
+    reading the control variables do not support.
+    """
+    return {row[0] for row in con.execute(
+        """SELECT DISTINCT m.case_name FROM metrics m
+           JOIN runs r ON r.id = m.run_id WHERE r.suite = 'jmh'""")}
+
+
 def _has_case(con, case):
     return con.execute("SELECT 1 FROM metrics WHERE case_name = ? LIMIT 1", (case,)).fetchone() is not None
 
@@ -67,15 +85,17 @@ def generate(con, out_dir, title, env_lines):
 
     seen = set()
     rows = _latest_rows(con)
+    stage1 = _stage1_cases(con)
     lines = ["# " + title, ""]
     lines += ["%s" % env for env in env_lines]
     lines += ["", "![关键指标同屏对比](%s)" % png, ""]
     lines += ["## 指标明细（每项取最近一次摄取值）", ""]
     lines += ["| 指标 | 度量 | 数值 | 方向 |", "| --- | --- | --- | --- |"]
-    ordered = [c for c in ORDER if any(r[0] == c for r in rows)]
-    ordered += sorted({r[0] for r in rows} - set(ordered))
+    matrix_rows = [r for r in rows if r[0] not in stage1]
+    ordered = [c for c in ORDER if any(r[0] == c for r in matrix_rows)]
+    ordered += sorted({r[0] for r in matrix_rows} - set(ordered))
     for case in ordered:
-        for c, metric, value, unit, direction in rows:
+        for c, metric, value, unit, direction in matrix_rows:
             if c != case:
                 continue
             seen.add((case, metric))
@@ -238,6 +258,30 @@ def generate(con, out_dir, title, env_lines):
                       "预算腾出、到生产者恢复推入的往返；网络边含一次 socket flush 故高于进程内边。"
                       "停读期间 RSS 持平基线，正说明满队列被封顶在预算内、逐级回传为端到端反压，"
                       "而非在引擎里无界堆积。"]
+    if stage1:
+        lines += ["", "## 阶段一：单核吞吐基线（官方 flink-benchmarks JMH，仅 Flink 腿）", "",
+                  "| 用例 | Flink 基线 | 误差 (99.9%) | 单位 | Flinkable 同形腿 |",
+                  "| --- | --- | --- | --- | --- |"]
+        for case in [c for c in STAGE1_ORDER if c in stage1] + sorted(
+                stage1 - set(STAGE1_ORDER)):
+            score = _value(con, case, "score")
+            err = _value(con, case, "error")
+            unit = con.execute(
+                "SELECT unit FROM metrics WHERE case_name = ? AND metric = 'score' LIMIT 1",
+                (case,)).fetchone()
+            if score is None:
+                continue
+            lines.append("| %s | %.0f | ±%s | %s | 待补 |" % (
+                case_label(case), score, "—" if err is None else "%.0f" % err,
+                unit_label(unit[0]) if unit else ""))
+        lines += ["", "口径：单核（绑核 + 关同物理核 SMT 兄弟）、7 迭代 × 20 s、Flink 2.3.0、"
+                      "官方 JMH 类，控制变量逐项记录在 run 目录 `env.json`。此表**不是跨引擎对比**，"
+                      "Flinkable 同形腿受 `fab-windows`、类型化记录通路等 P-A 阻塞项制约，待补测后另开面板。", "",
+                  "**状态后端四腿的读数告警**：`MEMORY`/`FS`/`ROCKS`/`ROCKS_INC` 实测最大只差 6.6%，"
+                  "这不代表状态访问成本接近，而是上游 `StateBackendBenchmarkBase` 把键空间写死 1000 键、"
+                  "负载窗口 10000 s 在测量期内永不触发、迭代期间又无检查点，RocksDB 工作集全命中 "
+                  "memtable/块缓存——该组量的是 `source→map→keyBy→window` 管道。要在这一组出有意义的"
+                  "跨引擎对比，必须两侧同时放大键空间并打开检查点。"]
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(
         "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()
