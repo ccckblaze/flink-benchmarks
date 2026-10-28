@@ -82,36 +82,48 @@ def generate(con, out_dir, title, env_lines):
             arrow = "越低越好" if direction == "lower_is_better" else "越高越好"
             lines.append("| %s | %s | %.4g %s | %s |" % (
                 case_label(case), metric_label(metric), value, unit_label(unit), arrow))
-    lines += ["", "## 非 ASCII 字符串编解码（同会话 A/B，改造前后与原版并列）", ""]
-    shape_specs = [("ab_encode_cjk_8", "ab_decode_cjk_8", "serde_shape_cjk10", "中文 10 字"),
-                   # No JVM leg for this exact shape: the original's cjk40 leg is 40 units,
-                   # this one 52, so pairing them would compare different strings.
-                   ("ab_encode_cjk_64", "ab_decode_cjk_64", None, "中文 52 字"),
-                   ("ab_encode_kana_16", "ab_decode_kana_16", None, "日文 16 字"),
-                   ("ab_encode_emoji_5", "ab_decode_emoji_5", None, "emoji"),
-                   ("ab_encode_mixed_16", "ab_decode_mixed_16", "serde_shape_mixed", "中英混排 + emoji"),
-                   ("ab_encode_ascii_12", "ab_decode_ascii_12", None, "ASCII 12 字节（对照）")]
+    lines += ["", "## 非 ASCII 字符串全链条（与原版同会话、同形状、同纪律并列）", ""]
+    canonical = [("serde_shape_cjk10", "中文 10 字"),
+                 ("serde_shape_cjk40", "中文 40 字"),
+                 ("serde_shape_mixed", "中英混排 + emoji")]
+    canon_rows = [(label, _value(con, case, "flinkable"), _value(con, case, "flink_jvm"),
+                   _value(con, case, "flink_over_flinkable"))
+                  for case, label in canonical if _has_case(con, case)]
+    if canon_rows:
+        lines += ["| 形状 | flinkable（Rust 原生） | Apache Flink 原版（JVM） | 原版/flinkable |",
+                  "| --- | --- | --- | --- |"]
+        for label, native, jvm, ratio in canon_rows:
+            lines.append("| %s | %.0f 纳秒/记录 | %.0f 纳秒/记录 | %.2f 倍 |" % (
+                label, native, jvm, ratio))
+        lines += ["", "口径：整条链（值构造 + 编码 + 解码）每记录往返耗时，纳秒/记录；两腿取自同一次"
+                      "跨引擎对表运行，Rust 腿为池化批形制（生产形态），JVM 腿为 Flink"
+                      " `StringSerializer` 经 `DataOutputSerializer`/`DataInputDeserializer` 的完整往返。"]
+    lines += ["", "## 编解码通道改造前后（同一二进制内的 A/B 腿）", ""]
+    shape_specs = [("ab_encode_cjk_8", "ab_decode_cjk_8", "中文 10 字"),
+                   ("ab_encode_cjk_64", "ab_decode_cjk_64", "中文 52 字"),
+                   ("ab_encode_kana_16", "ab_decode_kana_16", "日文 16 字"),
+                   ("ab_encode_emoji_5", "ab_decode_emoji_5", "emoji"),
+                   ("ab_encode_mixed_16", "ab_decode_mixed_16", "中英混排 + emoji"),
+                   ("ab_encode_ascii_12", "ab_decode_ascii_12", "ASCII 12 字节（对照）"),
+                   ("ab_encode_ascii_47", "ab_decode_ascii_47", "ASCII 47 字节（对照）")]
     shape_rows = []
-    for enc, dec, jvmcase, label in shape_specs:
+    for enc, dec, label in shape_specs:
         if not (_has_case(con, enc) and _has_case(con, dec)):
             continue
         before = _value(con, enc, "flinkable_before") + _value(con, dec, "flinkable_before")
         after = _value(con, enc, "flinkable") + _value(con, dec, "flinkable")
         borrow = _value(con, dec, "flinkable_borrow")
-        jvm = _value(con, jvmcase, "flink_jvm") if jvmcase and _has_case(con, jvmcase) else None
-        shape_rows.append((label, before, after, borrow, jvm))
+        if before and after:
+            shape_rows.append((label, before, after, borrow))
     if shape_rows:
-        lines += ["| 形状 | 改造前 | 改造后 | 提速 | 原版（JVM） | 改造后/原版 |",
-                  "| --- | --- | --- | --- | --- | --- |"]
-        for label, before, after, borrow, jvm in shape_rows:
-            lines.append("| %s | %.0f | %.0f | %.0f%% | %s | %s |" % (
-                label, before, after, (before - after) * 100.0 / before,
-                "%.0f 纳秒/记录" % jvm if jvm else "未对表",
-                "%.2f 倍" % (jvm / after) if jvm else "—"))
-        lines += ["", "口径：编解码往返耗时（纳秒/记录），不含值构造项；“改造前/改造后”取自同一次"
-                      "运行内的 A/B 腿，避免跨会话机器状态漂移；“原版”为 Flink `StringSerializer`"
-                      " 经 `DataOutputSerializer`/`DataInputDeserializer` 的完整往返（另含一次缓冲拷贝分配）。"
-                      "emoji 与日文行暂无原版对表值。"]
+        lines += ["| 形状 | 改造前 | 改造后 | 提速 | 借用零分配解码 |",
+                  "| --- | --- | --- | --- | --- |"]
+        for label, before, after, borrow in shape_rows:
+            lines.append("| %s | %.0f | %.0f | %.0f%% | %.0f |" % (
+                label, before, after, (before - after) * 100.0 / before, borrow))
+        lines += ["", "口径：仅编解码通道（纳秒/记录），不含值构造项；“改造前/改造后”为同一次运行内"
+                      "并列的 A/B 腿，避免跨会话机器状态漂移；“借用零分配解码”为解码不新建字符串的"
+                      "下界形态，仅作参照。"]
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(
         "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()

@@ -69,7 +69,7 @@ def render(con, out_path, title):
         panels.append("shuffle")
     elif _has(con, "framing_encode") and _has(con, "framing_decode"):
         panels.append("throughput")
-    if all(_has(con, k) for k in ("ab_encode_cjk_8", "ab_decode_cjk_8", "serde_shape_cjk10")):
+    if _has(con, "serde_shape_cjk10"):
         panels.append("shapes")
 
     n = len(panels)
@@ -152,26 +152,26 @@ def render(con, out_path, title):
                    label="原版 PyFlink（pyarrow 内核，Arrow IPC 进程间）")
             ax.set_yscale("log")
             _bar_labels(ax, [bar for container in ax.containers for bar in container], "{:.1f}")
-            ax.annotate("端到端 %.2f 倍" % ratios[0], (0, l1[0] * 2.2), ha="center", fontsize=9, color=BLUE)
+            ax.annotate("端到端 %.2f 倍" % ratios[0], (0, l1[0] * 1.45), ha="center", fontsize=9, color=BLUE)
             ax.annotate("%.2f 倍：计算占比掩盖传输收益" % ratios[1],
-                        (1, max(l1) * 2.0), ha="center", fontsize=8, color="#666666")
+                        (1, l1[1] * 1.45), ha="center", fontsize=8, color="#666666")
             ax.set_xticks(list(x), groups)
             ax.set_ylabel("每记录端到端耗时（纳秒，对数轴，越低越好）")
             ax.set_title("③ 端到端耗时（含计算）", fontsize=10)
             ax.legend(fontsize=7.5, loc="upper left")
             ax.set_ylim(15, max(l1) * 6)
         elif panel == "shapes":
-            # M131: the final effect only — the current non-ASCII lanes beside the real
-            # Flink StringSerializer round trip, priced in one session. The before/after
-            # history lives in the ledger, not on the comparison chart.
-            specs = [("ab_encode_cjk_8", "ab_decode_cjk_8", "serde_shape_cjk10", "中文 10 字"),
-                     ("ab_encode_mixed_16", "ab_decode_mixed_16", "serde_shape_mixed", "中英混排\n+ emoji")]
-            specs = [sp for sp in specs if _has(con, sp[0]) and _has(con, sp[2])]
-            after, jvm = [], []
-            for enc, dec, jvmcase, _label in specs:
-                after.append(_latest(con, enc, "flinkable")[0] + _latest(con, dec, "flinkable")[0])
-                jvm.append(_latest(con, jvmcase, "flink_jvm")[0])
-            groups = [sp[3] for sp in specs]
+            # M146: same shape, same session, same discipline on both bars — the canonical
+            # leg pair printed by the cross-engine table run (Rust lane beside the real
+            # Flink StringSerializer round trip). The before/after history lives in the
+            # ledger and the report table, not on the comparison chart.
+            specs = [("serde_shape_cjk10", "中文 10 字"),
+                     ("serde_shape_cjk40", "中文 40 字"),
+                     ("serde_shape_mixed", "中英混排\n+ emoji")]
+            specs = [(c, g) for c, g in specs if _has(con, c)]
+            after = [_latest(con, c, "flinkable")[0] for c, _g in specs]
+            jvm = [_latest(con, c, "flink_jvm")[0] for c, _g in specs]
+            groups = [g for _c, g in specs]
             x = range(len(groups))
             b2 = ax.bar([i - w / 2 for i in x], after, w, color=BLUE, label="flinkable（Rust 原生）")
             b3 = ax.bar([i + w / 2 for i in x], jvm, w, color=GRAY, label="Apache Flink 原版（JVM）")
@@ -179,7 +179,7 @@ def render(con, out_path, title):
             for i in x:
                 ratio = jvm[i] / after[i]
                 word = "Rust 快 %.2f 倍" % ratio if ratio >= 1 else "Rust 慢 %.2f 倍" % (1 / ratio)
-                ax.annotate(word, (i, (after[i] + jvm[i]) / 2), ha="center", fontsize=9,
+                ax.annotate(word, (i, max(after[i], jvm[i]) * 1.16), ha="center", fontsize=9,
                             color=BLUE if ratio >= 1 else "#a33",
                             bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
             ax.set_xticks(list(x), groups)
@@ -187,8 +187,7 @@ def render(con, out_path, title):
             ax.set_ylabel("每记录往返耗时（纳秒，越低越好）")
             ax.set_title("⑥ 非 ASCII 字符串编解码（与原版同会话并列）", fontsize=10)
             ax.legend(fontsize=7.5, loc="upper right")
-            ax.set_ylim(0, max(after + jvm) * 1.28)
-            ax.set_ylim(0, max(after + jvm) * 1.28)
+            ax.set_ylim(0, max(after + jvm) * 1.42)
         elif panel == "memory":
             if _has(con, "memory_jm_rss"):
                 # M131: the standardized distributed deployment — one JobManager plus one

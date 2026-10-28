@@ -66,6 +66,13 @@ def main(argv=None):
     p.add_argument("--host", default="local")
     p.add_argument("--source", required=True)
 
+    p = sub.add_parser("gate-jvm", help="check a canonical log's JVM legs against stored history")
+    p.add_argument("path")
+    p.add_argument("--tolerance", type=float, default=0.15,
+                   help="max allowed deviation from the stored median (default 0.15)")
+    p.add_argument("--exclude-source", default=None,
+                   help="run source to drop from the band (the session under review)")
+
     p = sub.add_parser("report", help="write report.md + report.png")
     p.add_argument("--out", default="flinkbench/out")
     p.add_argument("--title", default="flinkable × Apache Flink 关键指标同屏对比（benchctl 生成）")
@@ -95,6 +102,19 @@ def main(argv=None):
         run = store.add_run(con, args.host, "manual", args.source)
         store.add_metric(con, run, args.case, args.metric, args.value, args.unit, args.direction)
         print("run %d: %s/%s = %g %s stored" % (run, args.case, args.metric, args.value, args.unit))
+    elif args.cmd == "gate-jvm":
+        from flinkbench import gate
+        with open(args.path) as f:
+            ok, rows = gate.check(con, f.read(), tolerance=args.tolerance,
+                                 exclude_source=args.exclude_source)
+        for case, value, med, dev, verdict in rows:
+            if med is None:
+                print("%-24s session=%-7g %s" % (case, value, verdict))
+            else:
+                print("%-24s session=%-7g median=%-7g dev=%+.1f%% %s" % (
+                    case, value, med, dev * 100, verdict))
+        print("gate-jvm: %s" % ("PASS — 可入册锚定" if ok else "FAIL — JVM 腿出带，勿入册（M137 先例）"))
+        sys.exit(0 if ok else 1)
     elif args.cmd == "report":
         env = args.env or ["环境：见 flinkbench/README.md（口径随 run 记录在库）"]
         print(report.generate(con, args.out, args.title, env))

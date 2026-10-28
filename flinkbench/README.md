@@ -52,6 +52,34 @@ python3 benchctl.py runs
 
 结果库默认 `flinkbench/bench.db`（sqlite，不入库）；报告默认 `flinkbench/out/`（不入库）。
 
+## canonical 对表会话（跨引擎面板的唯一入册来源）
+
+一条会话 = 台子上按顺序跑完下列腿，日志汇聚后先过门、再入册：
+
+```bash
+# 台子（洁净机，--test-threads=1，release）
+cargo test --release -p fab-serde --test jvm_serializer_bench -- --ignored --test-threads=1 --nocapture
+cargo test --release -p fab-serde --test string_breakdown m128_vs_m126_same_session -- --ignored --test-threads=1 --nocapture
+cargo test --release -p fab-serde --test serde_bench -- --ignored --test-threads=1 --nocapture
+cargo test --release -p fab-embed -- --ignored --test-threads=1 --nocapture
+cargo test --release -p fab-arrow --test data_plane_throughput -- --ignored --test-threads=1 --nocapture
+cargo test --release -p fab-task --test perf_bench -- --ignored --test-threads=1 --nocapture
+~/.fabvenvs/fabpyflink311/bin/python ~/flink-native/tools/py-coder-bench/coder_bench.py
+
+# 本地：过滤 → 过带 → 入册 → 出报告
+ssh -p 22 <rig> "grep -E 'MEASURED|P57-|P58-|^AB\\||ratio |L2 |L1 |export-only|pyflink coder' /tmp/<log>" > /tmp/<log>.filtered
+python3 benchctl.py gate-jvm /tmp/<log>.filtered --exclude-source <里程碑>   # 非 0 退出 = JVM 腿出带，禁止入册
+python3 benchctl.py ingest-measured /tmp/<log>.filtered --host rig --source <里程碑>
+python3 benchctl.py report --out flinkbench/out --env "环境：<一句话>"
+```
+
+**漂移纪律（M137 先例，`gate-jvm` 已固化）**：跨引擎比值面板的 JVM 腿带着自身机器态
+（JIT/GC 对字符串形状的敏感度），历史观测非 ASCII 形状腿可摆动 25-30% 而定形腿不动。
+出带会话若入册，会把 Rust 呈现成“对着更快的 JVM 回退了”——那是参照引擎在动，不是本引擎。
+故：`gate-jvm` 以**最近三次**同腿值的中位数为带（一次重新锚定后旧制度不投票）、
+被审会话自身不参与锚带，超 ±15% 即 FAIL；FAIL 的会话只入台账、不入册、不覆盖既有面板。
+收益改由**同一二进制内的 A/B 腿**（`AB|` 行）与未改动腿作漂移对照来入账。
+
 ## 设计口径（与上游一致的三条）
 
 1. **单机微基准**：所有数字声明为微基准口径，端到端作业对比未开展前不出端到端结论；

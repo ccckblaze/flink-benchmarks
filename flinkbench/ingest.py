@@ -134,12 +134,13 @@ MEASURED_PATTERNS = [
                 ("memory_" + m[0] + "_rss", "flinkable", m[2], "MB", LB),
                 ("memory_" + m[0] + "_rss", "flink_over_flinkable", str(float(m[1]) / float(m[2])), "x", HB)]),
     # M131: columnar framing vs JVM row serialization, same record shape, one session.
-    (r"P58-TABLE\|bulk4\|rust_enc=([\d.]+)\|rust_dec=([\d.]+)\|rust=([\d.]+)\|jvm=([\d.]+)\|jvm_over_rust=([\d.]+)x",
+    (r"P58-TABLE\|bulk4\|rust_enc=([\d.]+)\|rust_dec=([\d.]+)\|rust=([\d.]+)\|(?:rust_count=([\d.]+)\|)?jvm=([\d.]+)\|jvm_over_rust=([\d.]+)x",
      lambda m: [("bulk4_framing", "flink_enc", m[0], "ns/rec", LB),
                 ("bulk4_framing", "flink_dec", m[1], "ns/rec", LB),
-                ("bulk4_framing", "flinkable", m[2], "ns/rec", LB),
-                ("bulk4_framing", "flink_jvm", m[3], "ns/rec", LB),
-                ("bulk4_framing", "flink_over_flinkable", m[4], "x", HB)]),
+                ("bulk4_framing", "flinkable", m[2], "ns/rec", LB)]
+               + ([("serde_bulk4_count", "flinkable", m[3], "ns/rec", LB)] if len(m) == 6 else [])
+               + [("bulk4_framing", "flink_jvm", m[3] if len(m) == 5 else m[4], "ns/rec", LB),
+                  ("bulk4_framing", "flink_over_flinkable", m[4] if len(m) == 5 else m[5], "x", HB)]),
     # M129: both engines' string terms in one session — construction vs codec.
     (r"P57-TABLE\|string-terms\|rust_construct=([\d.]+)\|rust_codec=([\d.]+)\|jvm_construct=([\d.]+)\|jvm_codec=([\d.]+)\|construct_over_rust=([\d.]+)x\|codec_over_rust=([\d.]+)x",
      lambda m: [("serde_string_construct", "flinkable", m[0], "ns/rec", LB),

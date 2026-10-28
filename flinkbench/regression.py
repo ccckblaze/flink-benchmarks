@@ -69,12 +69,15 @@ def scan_store(con, **kwargs):
     out = []
     # Derived ratio series (jvm-over-rust style) mix two measurements from one session;
     # JVM-side drift alone can move them past the threshold, so they are reported in the
-    # tables but never judged here. Only raw measured series get a regression verdict.
+    # tables but never judged here. The JVM legs themselves measure the reference engine,
+    # not this one — their spread is machine state (JIT/GC), and a verdict would blame
+    # flinkable for the reference moving. Only flinkable-owned raw series get judged.
     derived = {"flink_over_flinkable", "transfer_ratio", "end_to_end_ratio"}
+    reference = {"flink_jvm", "pyflink", "pyflink_enc", "pyflink_dec"}
     for case, metric in con.execute(
         "SELECT DISTINCT case_name, metric FROM metrics ORDER BY case_name, metric"
     ).fetchall():
-        if metric in derived:
+        if metric in derived or metric in reference:
             continue
         values = [v for (v,) in con.execute(
             """SELECT m.value FROM metrics m JOIN runs r ON r.id = m.run_id
