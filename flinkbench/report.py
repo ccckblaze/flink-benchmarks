@@ -132,6 +132,7 @@ def generate(con, out_dir, title, env_lines):
 
     bp_matrix = [
         ("网络通道停读（单通道）", "flinkable", "backpressure_tcp_stall"),
+        ("网络通道停读（单通道）", "flinkable（预算封顶）", "backpressure_tcp_stall_capped"),
         ("网络通道停读（单通道）", "原版 Flink（池按预算封顶）", "backpressure_tcp_stall_jvm"),
         ("网络通道停读（单通道）", "原版 Flink（池预留全场景）", "backpressure_reserved_jvm"),
         ("广播扇出（一慢）", "flinkable", "backpressure_broadcast"),
@@ -139,9 +140,11 @@ def generate(con, out_dir, title, env_lines):
         ("数据倾斜（一热）", "flinkable", "backpressure_skew"),
         ("数据倾斜（一热）", "原版 Flink（每通道配额）", "backpressure_skew_jvm"),
         ("多输入归并（一慢）", "flinkable", "backpressure_union"),
+        ("多输入归并（一慢）", "flinkable（预算封顶）", "backpressure_union_capped"),
         ("非对齐检查点 × 在途数据", "flinkable", "backpressure_capture"),
         ("非对齐检查点 × 在途数据", "原版 Flink", "backpressure_capture_jvm"),
         ("任务间通道停读", "flinkable", "backpressure_channel"),
+        ("任务间通道停读", "flinkable（预算封顶）", "backpressure_channel_capped"),
         ("Python 算子停读（嵌入式）", "flinkable", "backpressure_python"),
     ]
     bp_rows = []
@@ -152,11 +155,13 @@ def generate(con, out_dir, title, env_lines):
         peak = _maybe(con, case, "rss_peak_mb")
         after = _maybe(con, case, "rss_after_mb")
         queued = _maybe(con, case, "rss_queued_mb")
+        peek = _maybe(con, case, "rss_peek_mb")
         held = _maybe(con, case, "backlog_mb")
         if held is None:
             held = _maybe(con, case, "hot_mb")
         refused = _maybe(con, case, "refused")
-        copy_mb = (peak - queued) if (peak is not None and queued is not None) else None
+        copy_ref = peek if peek is not None else queued
+        copy_mb = (peak - copy_ref) if (peak is not None and copy_ref is not None) else None
         bp_rows.append((shape, engine, base, peak, after, held, copy_mb, refused))
     if bp_rows:
         lines += ["| 场景 | 引擎 | 基线 RSS | 反压峰值 | 排空后 | 队列/池驻留 | 快照额外拷贝 | 拒绝写入 |",
@@ -183,9 +188,12 @@ def generate(con, out_dir, title, env_lines):
                       "基线互不污染。要点：原版“反压时内存涨得快”发生在**构造期预留**（缓冲池一次性握段），"
                       "“回收慢甚至不回收”是**池化复用**（段不回 OS，全程 GC 仅 2–3 次），均非 GC 问题；"
                       "每通道配额（`maxBuffersPerChannel`）使一慢/一热被封顶在 2 MB 级，拒绝 1984 次。"
-                      "flinkable 侧“拒绝写入 0 次”是尚未实现该信号的如实记录（M149 计划补封顶与拒绝）；"
-                      "非对齐检查点在我们引擎里对 in-flight 数据做字节克隆，形成真实 2× 峰值，而原版 "
-                      "BufferConsumer 共享同一段内存、额外拷贝≈0；排空后 RSS 是否回落取决于分配器能否归还"
+                      "M149 已为 flinkable 补上同形信号：任务间通道（Exchange）与网络 shuffle 均有生产者"
+                      "侧预算封顶（`with_budget`/`try_produce`），三形状拒绝 8128/8128/1984 次与原版对照腿"
+                      "一致，RSS 仅 +2 MB 级且排空后全部回落基线——无界积压与残留两个缺口关闭。"
+                      "非对齐检查点拆为两段：零拷贝捕获（peek）仅 +0.1 MB，与原版 BufferConsumer 共享语义"
+                      "同形；64 MB 来自持久化字节克隆（原版≈0），流式落盘在后续里程碑处理；"
+                      "未封顶形状排空后 RSS 是否回落取决于分配器能否归还"
                       "连续空闲块（归并/广播回落，停读/倾斜部分保留），属碎片而非泄漏。" + interp_note]
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(

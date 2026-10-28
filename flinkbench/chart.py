@@ -82,8 +82,10 @@ def _bp_stacks(con, case, jvm):
     if base is None or peak is None:
         return None
     queued = _mb("rss_queued_mb")
+    peek = _mb("rss_peek_mb")
+    capped = case.endswith("_capped")
     held_color = BP_PURPLE if jvm else BP_BLUE
-    held_tag = "缓冲池占用" if jvm else "引擎积压"
+    held_tag = "缓冲池占用" if jvm else ("预算封顶积压" if capped else "引擎积压")
     if case == "backpressure_python" and _has(con, "memory_embedded_python"):
         eng = float(_latest(con, "memory_embedded_python", "engine_base_mb")[0])
         interp_tot = float(_latest(con, "memory_embedded_python", "interp_total_mb")[0])
@@ -94,8 +96,12 @@ def _bp_stacks(con, case, jvm):
                   (max(base - libs_tot, 0.0), BP_PALE, "运行时基线"),
                   (peak - base, held_color, held_tag)]
     elif queued is not None:
-        during = [(base, BP_PALE, "运行时基线"), (queued - base, held_color, held_tag),
-                  (max(peak - queued, 0.0), BP_RED, "快照额外拷贝")]
+        during = [(base, BP_PALE, "运行时基线"), (queued - base, held_color, held_tag)]
+        if peek is not None:
+            during.append((max(peek - queued, 0.0), BP_TEAL, "零拷贝捕获"))
+            during.append((max(peak - peek, 0.0), BP_RED, "持久化拷贝"))
+        else:
+            during.append((max(peak - queued, 0.0), BP_RED, "快照额外拷贝"))
     else:
         during = [(base, BP_PALE, "运行时基线"), (peak - base, held_color, held_tag)]
     residue = max(after - base, 0.0) if after is not None else None
@@ -163,7 +169,7 @@ def _bp_panel(ax, con, groups, title):
                 ax.text(x1, top + 4, "已回落", ha="center", fontsize=6.5, color=BP_GREEN)
             peak_max = max(peak_max, peak)
     order = ["运行时基线", "Rust 引擎", "CPython 解释器", "Python 库", "引擎积压",
-             "缓冲池占用", "快照额外拷贝", "未回落残留"]
+             "预算封顶积压", "缓冲池占用", "零拷贝捕获", "持久化拷贝", "快照额外拷贝", "未回落残留"]
     handles = [Patch(color=c, label=t) for t in order for (tag, c) in used if tag == t]
     ax.set_xticks(range(len(groups)), [g[0] for g in groups])
     ax.tick_params(axis="x", labelsize=7)
@@ -313,13 +319,16 @@ def render(con, out_path, title):
         elif panel == "backpressure":
             _bp_panel(ax, con, [
                 ("网络通道停读\n（单通道）", [("backpressure_tcp_stall", False),
+                                   ("backpressure_tcp_stall_capped", False),
                                    ("backpressure_tcp_stall_jvm", True)]),
-                ("任务间通道停读", [("backpressure_channel", False)]),
+                ("任务间通道停读", [("backpressure_channel", False),
+                        ("backpressure_channel_capped", False)]),
                 ("广播扇出\n（一慢）", [("backpressure_broadcast", False),
                              ("backpressure_broadcast_jvm", True)]),
                 ("数据倾斜\n（一热）", [("backpressure_skew", False),
                              ("backpressure_skew_jvm", True)]),
-                ("多输入归并\n（一慢）", [("backpressure_union", False)]),
+                ("多输入归并\n（一慢）", [("backpressure_union", False),
+                             ("backpressure_union_capped", False)]),
             ], "⑦ 缓冲队列类反压：排空前 vs 排空后的绝对 RSS（左柱停读峰值 · 右柱排空终值）")
         elif panel == "backpressure_release":
             _bp_panel(ax, con, [
