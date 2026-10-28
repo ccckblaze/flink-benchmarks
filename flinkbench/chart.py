@@ -55,6 +55,125 @@ def _bar_labels(ax, bars, fmt="{:.0f}", fontsize=9):
                     ha="center", va="bottom", fontsize=fontsize)
 
 
+# M148 backpressure palette: one colour per component of the absolute RSS.
+BP_PALE = "#c8ccd4"
+BP_BLUE = BLUE
+BP_PURPLE = "#7a5aa3"
+BP_ORANGE = "#e8a33d"
+BP_GOLD = "#c9a227"
+BP_RED = "#b3403f"
+BP_TEAL = "#2e8b8b"
+BP_GREEN = "#2a7d4f"
+
+
+def _bp_stacks(con, case, jvm):
+    """Absolute-RSS decomposition of one backpressure leg.
+
+    Returns (during_segments, after_segments, peak, refused); the segment
+    lists stack bottom-up as (size, color, tag). None when the leg has not
+    been ingested.
+    """
+
+    def _mb(metric):
+        row = _latest(con, case, metric)
+        return float(row[0]) if row is not None else None
+
+    base, peak, after = _mb("rss_base_mb"), _mb("rss_peak_mb"), _mb("rss_after_mb")
+    if base is None or peak is None:
+        return None
+    queued = _mb("rss_queued_mb")
+    held_color = BP_PURPLE if jvm else BP_BLUE
+    held_tag = "缓冲池占用" if jvm else "引擎积压"
+    if case == "backpressure_python" and _has(con, "memory_embedded_python"):
+        eng = float(_latest(con, "memory_embedded_python", "engine_base_mb")[0])
+        interp_tot = float(_latest(con, "memory_embedded_python", "interp_total_mb")[0])
+        libs_tot = float(_latest(con, "memory_embedded_python", "libs_total_mb")[0])
+        during = [(eng, BP_TEAL, "Rust 引擎"),
+                  (interp_tot - eng, BP_GOLD, "CPython 解释器"),
+                  (libs_tot - interp_tot, BP_ORANGE, "Python 库"),
+                  (max(base - libs_tot, 0.0), BP_PALE, "运行时基线"),
+                  (peak - base, held_color, held_tag)]
+    elif queued is not None:
+        during = [(base, BP_PALE, "运行时基线"), (queued - base, held_color, held_tag),
+                  (max(peak - queued, 0.0), BP_RED, "快照额外拷贝")]
+    else:
+        during = [(base, BP_PALE, "运行时基线"), (peak - base, held_color, held_tag)]
+    residue = max(after - base, 0.0) if after is not None else None
+    after_segs = [(base, BP_PALE, "运行时基线")]
+    if residue is not None and residue > 1.0:
+        after_segs.append((residue, BP_RED, "未回落残留"))
+    return during, after_segs, peak, _mb("refused")
+
+
+def _bp_panel(ax, con, groups, title):
+    # M148: one figure per backpressure family. Every engine inside a group
+    # gets an adjacent pair of absolute-RSS bars — left bar is the peak while
+    # the consumer is stalled, right bar is the RSS once it drained — so the
+    # retention question answers itself at a glance. Bars stack by component.
+    from matplotlib.patches import Patch
+
+    peak_max, used = 0.0, set()
+    for g, (label, engines) in enumerate(groups):
+        present = [(c, j) for (c, j) in engines if _has(con, c)]
+        if not present:
+            continue
+        half = 0.8 / (2 * len(present))
+        width = min(0.19, half * 0.92)
+        for i, (case, jvm) in enumerate(present):
+            st = _bp_stacks(con, case, jvm)
+            if st is None:
+                continue
+            during, after_segs, peak, refused = st
+            x0 = g - 0.4 + (2 * i + 0.5) * half
+            x1 = g - 0.4 + (2 * i + 1.5) * half
+            bottom = 0.0
+            for size, color, tag in during:
+                if size <= 0:
+                    continue
+                ax.bar(x0, size, width, bottom=bottom, color=color)
+                if size >= 12.0 and peak - (bottom + size / 2) > 14.0:
+                    ax.text(x0, bottom + size / 2, "%d" % round(size), ha="center",
+                            va="center", fontsize=6.5,
+                            color="white" if color != BP_PALE else "#333")
+                used.add((tag, color))
+                bottom += size
+            ax.text(x0, peak - 3, "%.0f" % round(peak), ha="center", va="top",
+                    fontsize=7, color="white")
+            if refused is not None:
+                ax.text(x0, peak + 10, "拒绝 %d" % int(refused) if refused > 0
+                        else "拒绝 0", ha="center", fontsize=6.5,
+                        color=BP_BLUE if refused > 0 else BP_RED)
+            top = sum(size for size, _c, _t in after_segs)
+            bottom = 0.0
+            for size, color, tag in after_segs:
+                if size <= 0:
+                    continue
+                ax.bar(x1, size, width, bottom=bottom, color=color)
+                if size >= 12.0 and top - (bottom + size / 2) > 14.0:
+                    ax.text(x1, bottom + size / 2, "%d" % round(size), ha="center",
+                            va="center", fontsize=6.5,
+                            color="white" if color != BP_PALE else "#333")
+                used.add((tag, color))
+                bottom += size
+            if len(after_segs) > 1:
+                if after_segs[1][0] < 0.5 * peak:
+                    ax.text(x1, top + 4, "残留 %.0f" % round(after_segs[1][0]),
+                            ha="center", fontsize=6.5, color=BP_RED)
+            else:
+                ax.text(x1, top + 4, "已回落", ha="center", fontsize=6.5, color=BP_GREEN)
+            peak_max = max(peak_max, peak)
+    order = ["运行时基线", "Rust 引擎", "CPython 解释器", "Python 库", "引擎积压",
+             "缓冲池占用", "快照额外拷贝", "未回落残留"]
+    handles = [Patch(color=c, label=t) for t in order for (tag, c) in used if tag == t]
+    ax.set_xticks(range(len(groups)), [g[0] for g in groups])
+    ax.tick_params(axis="x", labelsize=7)
+    ax.set_ylabel("进程常驻内存 RSS（MB，绝对值）")
+    ax.set_title(title, fontsize=10)
+    legend_corner = "upper right" if peak_max < 300 else "upper left"
+    ax.legend(handles=handles, fontsize=7, loc=legend_corner, ncol=2)
+    ax.set_ylim(0, peak_max * 1.30)
+
+
 def render(con, out_path, title):
     panels = []
     if _has(con, "serde_int_long") and _has(con, "serde_string"):
@@ -71,8 +190,9 @@ def render(con, out_path, title):
         panels.append("throughput")
     if _has(con, "serde_shape_cjk10"):
         panels.append("shapes")
-    if all(_has(con, c) for c in ("backpressure_engine", "backpressure_channel")):
+    if _has(con, "backpressure_tcp_stall"):
         panels.append("backpressure")
+        panels.append("backpressure_release")
 
     n = len(panels)
     if n == 0:
@@ -191,36 +311,23 @@ def render(con, out_path, title):
             ax.legend(fontsize=7.5, loc="upper right")
             ax.set_ylim(0, max(after + jvm) * 1.42)
         elif panel == "backpressure":
-            # M147: what each engine does when a consumer stops reading. Two bars per
-            # shape — the bytes held while stalled, and the RSS still missing after the
-            # channel recovered. The refusal count rides as an annotation: Flink's buffer
-            # pool refuses writes once its budget is gone (that refusal *is* backpressure),
-            # so a zero next to a large absorption is the finding, not a rounding error.
-            specs = [("backpressure_engine", "flinkable\n网络 shuffle 通道"),
-                     ("backpressure_channel", "flinkable\n任务间通道"),
-                     ("backpressure_jvm_pool", "原版 Flink\n缓冲池按预算封顶"),
-                     ("backpressure_jvm_reserved", "原版 Flink\n池可容纳全场景")]
-            specs = [(c, g) for c, g in specs if _has(con, c)]
-            cases = [c for c, _g in specs]
-            absorbed = [_latest(con, c, "absorbed_mb")[0] for c in cases]
-            retained = [_latest(con, c, "rss_retained_mb")[0] for c in cases]
-            refused = [_latest(con, c, "refused")[0] for c in cases]
-            x = range(len(cases))
-            b1 = ax.bar([i - w / 2 for i in x], absorbed, w, color=BLUE,
-                        label="反压期间引擎吸收（队列/池驻留）")
-            b2 = ax.bar([i + w / 2 for i in x], retained, w, color=GRAY,
-                        label="恢复排空后常驻内存增量（未回落）")
-            _bar_labels(ax, list(b1) + list(b2), "{:.0f}", fontsize=7.5)
-            for i in x:
-                ax.annotate("拒绝写入 %d 次" % refused[i], (i, max(absorbed[i], retained[i]) * 1.1),
-                            ha="center", fontsize=7.5, color="#a33" if refused[i] == 0 else BLUE,
-                            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
-            ax.set_xticks(list(x), [g for _c, g in specs])
-            ax.tick_params(axis="x", labelsize=7.5)
-            ax.set_ylabel("内存（MB，越低越好）")
-            ax.set_title("⑦ 反压行为（下游停读 8192 × 32 KiB 网络缓冲）", fontsize=10)
-            ax.legend(fontsize=7, loc="upper left")
-            ax.set_ylim(0, max(absorbed + retained) * 1.36)
+            _bp_panel(ax, con, [
+                ("网络通道停读\n（单通道）", [("backpressure_tcp_stall", False),
+                                   ("backpressure_tcp_stall_jvm", True)]),
+                ("任务间通道停读", [("backpressure_channel", False)]),
+                ("广播扇出\n（一慢）", [("backpressure_broadcast", False),
+                             ("backpressure_broadcast_jvm", True)]),
+                ("数据倾斜\n（一热）", [("backpressure_skew", False),
+                             ("backpressure_skew_jvm", True)]),
+                ("多输入归并\n（一慢）", [("backpressure_union", False)]),
+            ], "⑦ 缓冲队列类反压：排空前 vs 排空后的绝对 RSS（左柱停读峰值 · 右柱排空终值）")
+        elif panel == "backpressure_release":
+            _bp_panel(ax, con, [
+                ("非对齐检查点\n（在途数据快照）", [("backpressure_capture", False),
+                                        ("backpressure_capture_jvm", True)]),
+                ("Python 算子停读\n（嵌入式）", [("backpressure_python", False)]),
+                ("网络通道停读\n（原版池预留全场景）", [("backpressure_reserved_jvm", True)]),
+            ], "⑧ 检查点、Python 算子与原版预留对照：排空前 vs 排空后的绝对 RSS")
         elif panel == "memory":
             if _has(con, "memory_jm_rss"):
                 # M131: the standardized distributed deployment — one JobManager plus one
@@ -253,14 +360,41 @@ def render(con, out_path, title):
                     tops = [jm_jvm, jm_py, jm_fab] + ([jm_fab] if has_fab_py else [])
                     mids = [tm_jvm, tm_py, tm_fab] + ([tm_fab_py] if has_fab_py else [])
                     bots = [0.0, py_py, 0.0] + ([0.0] if has_fab_py else [])
+                    # M148: the flinkable Python interpreter lives inside the TM process,
+                    # so its bar decomposes along the embedded probe's RSS steps: Rust
+                    # runtime, the CPython interpreter floor, the pyarrow/pandas library
+                    # floor, and whatever Python-side cost is left over. The bar total is
+                    # exactly what the cluster measured — only the split comes from the probe.
+                    fab_py_split = None
+                    if has_fab_py and _has(con, "memory_embedded_python"):
+                        eng = float(_latest(con, "memory_embedded_python", "engine_base_mb")[0])
+                        interp_tot = float(_latest(con, "memory_embedded_python", "interp_total_mb")[0])
+                        libs_tot = float(_latest(con, "memory_embedded_python", "libs_total_mb")[0])
+                        interp_share = interp_tot - eng
+                        libs_share = libs_tot - interp_tot
+                        other_share = max(tm_fab_py - tm_fab - interp_share - libs_share, 0.0)
+                        fab_py_split = (interp_share, libs_share, other_share)
+                        mids[3] = tm_fab
+                        bots[3] = interp_share
                     totals = [t + m + b for t, m, b in zip(tops, mids, bots)]
+                    if fab_py_split is not None:
+                        totals[3] += fab_py_split[1] + fab_py_split[2]
                     ax.bar(cats, tops, 0.55, color=orange,
                            label="JobManager（Java，三侧同源）")
                     ax.bar(cats, mids, 0.55, bottom=tops, color=[GRAY, GRAY, BLUE],
                            label="TaskManager（Java / Rust）")
                     ax.bar(cats, bots, 0.55,
                            bottom=[t + m for t, m in zip(tops, mids)],
-                           color=gold, label="Python worker（每槽位一进程）")
+                           color=gold,
+                           label="Python 解释器（原版每槽位一进程 / flinkable 嵌入 TM 进程内）")
+                    if fab_py_split is not None:
+                        interp_share, libs_share, other_share = fab_py_split
+                        light = "#c8ccd4"
+                        top3 = tops[3] + mids[3] + interp_share
+                        ax.bar([3], [libs_share], 0.55, bottom=[top3], color=orange,
+                               label="Python 库 pyarrow/pandas（同进程内）")
+                        ax.bar([3], [other_share], 0.55, bottom=[top3 + libs_share], color=light,
+                               label="其它 Python 开销（运行时/胶水）")
                     for x, (t, m) in enumerate(zip(tops, mids)):
                         ax.annotate("JM %.0f" % t, (x, t / 2), ha="center", fontsize=8, color="white")
                         if x == 2:
@@ -268,6 +402,21 @@ def render(con, out_path, title):
                                         xytext=(30, 16), textcoords="offset points",
                                         ha="left", fontsize=8, color=BLUE,
                                         arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
+                        elif x == 3 and fab_py_split is not None:
+                            ax.annotate("Rust 引擎 %.1f" % m, (x, t + m),
+                                        xytext=(28, 14), textcoords="offset points",
+                                        ha="left", fontsize=8, color=BLUE,
+                                        arrowprops=dict(arrowstyle="-", color=BLUE, lw=0.8))
+                            interp_share, libs_share, other_share = fab_py_split
+                            base3 = t + m
+                            ax.annotate("解释器 %.0f" % interp_share, (x, base3 + interp_share / 2),
+                                        ha="center", va="center", fontsize=7.5, color="white")
+                            ax.annotate("库 %.0f" % libs_share, (x, base3 + interp_share + libs_share / 2),
+                                        ha="center", va="center", fontsize=7.5, color="white")
+                            if other_share >= 12:
+                                ax.annotate("其它 %.0f" % other_share,
+                                            (x, base3 + interp_share + libs_share + other_share / 2),
+                                            ha="center", va="center", fontsize=7.5, color="#333")
                         elif x == 3:
                             ax.annotate("TM %.0f" % m, (x, t + m / 2), ha="center", fontsize=8, color="white")
                         else:

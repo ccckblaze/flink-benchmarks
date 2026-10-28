@@ -124,30 +124,69 @@ def generate(con, out_dir, title, env_lines):
         lines += ["", "口径：仅编解码通道（纳秒/记录），不含值构造项；“改造前/改造后”为同一次运行内"
                       "并列的 A/B 腿，避免跨会话机器状态漂移；“借用零分配解码”为解码不新建字符串的"
                       "下界形态，仅作参照。"]
-    lines += ["", "## 反压行为（消费者停读时引擎吸收与回落）", ""]
-    bp_cases = [("backpressure_engine", "flinkable · 网络 shuffle 通道", "buffers"),
-                ("backpressure_channel", "flinkable · 任务间通道", "records"),
-                ("backpressure_jvm_pool", "原版 Flink · 缓冲池按预算封顶（64 段）", "buffers"),
-                ("backpressure_jvm_reserved", "原版 Flink · 池可容纳全场景（8192 段）", "buffers")]
-    bp_rows = [(label, _value(con, case, "absorbed_mb"), _value(con, case, "refused"),
-                _value(con, case, "residual_mb"), _value(con, case, "rss_retained_mb"),
-                _value(con, case, "drain_ns"), unit)
-               for case, label, unit in bp_cases if _has_case(con, case)]
+    lines += ["", "## 反压分型：停读期间与排空后的绝对内存", ""]
+
+    def _maybe(con, case, metric):
+        row = chart._latest(con, case, metric)
+        return row[0] if row else None
+
+    bp_matrix = [
+        ("网络通道停读（单通道）", "flinkable", "backpressure_tcp_stall"),
+        ("网络通道停读（单通道）", "原版 Flink（池按预算封顶）", "backpressure_tcp_stall_jvm"),
+        ("网络通道停读（单通道）", "原版 Flink（池预留全场景）", "backpressure_reserved_jvm"),
+        ("广播扇出（一慢）", "flinkable", "backpressure_broadcast"),
+        ("广播扇出（一慢）", "原版 Flink（每通道配额）", "backpressure_broadcast_jvm"),
+        ("数据倾斜（一热）", "flinkable", "backpressure_skew"),
+        ("数据倾斜（一热）", "原版 Flink（每通道配额）", "backpressure_skew_jvm"),
+        ("多输入归并（一慢）", "flinkable", "backpressure_union"),
+        ("非对齐检查点 × 在途数据", "flinkable", "backpressure_capture"),
+        ("非对齐检查点 × 在途数据", "原版 Flink", "backpressure_capture_jvm"),
+        ("任务间通道停读", "flinkable", "backpressure_channel"),
+        ("Python 算子停读（嵌入式）", "flinkable", "backpressure_python"),
+    ]
+    bp_rows = []
+    for shape, engine, case in bp_matrix:
+        if not _has_case(con, case):
+            continue
+        base = _maybe(con, case, "rss_base_mb")
+        peak = _maybe(con, case, "rss_peak_mb")
+        after = _maybe(con, case, "rss_after_mb")
+        queued = _maybe(con, case, "rss_queued_mb")
+        held = _maybe(con, case, "backlog_mb")
+        if held is None:
+            held = _maybe(con, case, "hot_mb")
+        refused = _maybe(con, case, "refused")
+        copy_mb = (peak - queued) if (peak is not None and queued is not None) else None
+        bp_rows.append((shape, engine, base, peak, after, held, copy_mb, refused))
     if bp_rows:
-        lines += ["| 通道 | 引擎吸收 | 拒绝写入 | 恢复后队列残留 | 恢复后常驻内存未回落 | 排空耗时 |",
-                  "| --- | --- | --- | --- | --- | --- |"]
-        for label, absorbed, refused, residual, retained, drain_ns, unit in bp_rows:
-            lines.append("| %s | %.0f MB | %d 次 | %.1f MB | %.0f MB | %.0f 纳秒/%s |" % (
-                label, absorbed, refused, residual, retained, drain_ns,
-                "缓冲" if unit == "buffers" else "记录"))
-        lines += ["", "口径：单通道停读 8192 × 32 KiB（Flink 网络缓冲段大小）后，引擎驻留字节、被拒写入"
-                      "次数、恢复排空后队列残留与进程常驻内存增量（`/proc/self/statm`，同进程基线差）。"
-                      "原版一行两态：按预算封顶的池（`LocalBufferPool` 段尽 → `isAvailable()=false` → 生产者被拒 "
-                      "8128 次，驻留仅 2 MB）；把池放到能吞下整个场景时，256 MB 在**构造期**就预留完毕，"
-                      "反压期间不再增长，而回收后 RSS 一分不还（389 MB 全程驻留，期间 GC 仅 2 次）——"
-                      "原版“反压时内存涨”实为**预留**、“不回收”实为**池化**。"
-                      "flinkable 两行的“拒绝写入 0 次”是本引擎尚未实现该信号的如实记录，"
-                      "“恢复后常驻内存未回落”为分配器保留页（非队列数据）的记账。"]
+        lines += ["| 场景 | 引擎 | 基线 RSS | 反压峰值 | 排空后 | 队列/池驻留 | 快照额外拷贝 | 拒绝写入 |",
+                  "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+        for shape, engine, base, peak, after, held, copy_mb, refused in bp_rows:
+            cell = lambda v, fmt="%.1f": ("—" if v is None else fmt % v)
+            lines.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                shape, engine, cell(base), cell(peak), cell(after), cell(held),
+                cell(copy_mb), "—" if refused is None else "%d 次" % int(refused)))
+        interp_note = ""
+        if _has_case(con, "memory_embedded_python"):
+            interp_note = ("嵌入式 Python 的构成（同会话探针，`RSS|embed`）：Rust 引擎基线 %.1f MB → "
+                           "CPython 解释器 %.1f MB → pyarrow/pandas 库 %.1f MB → 在途 Arrow 批 %.1f MB；"
+                           "Python 算子停读行的色块即按此拆分。" % (
+                               _maybe(con, "memory_embedded_python", "engine_base_mb"),
+                               _maybe(con, "memory_embedded_python", "interp_total_mb")
+                               - _maybe(con, "memory_embedded_python", "engine_base_mb"),
+                               _maybe(con, "memory_embedded_python", "libs_total_mb")
+                               - _maybe(con, "memory_embedded_python", "interp_total_mb"),
+                               _maybe(con, "memory_embedded_python", "batch_total_mb")
+                               - _maybe(con, "memory_embedded_python", "libs_total_mb")))
+        lines += ["", "口径：全部为**同一进程的绝对常驻内存 RSS**（`/proc/self/statm`），三段采样——停读前基线、"
+                      "停读期间峰值、恢复排空后终值；不再报告增量。原版对照腿在**独立 JVM 进程**逐场景运行，"
+                      "基线互不污染。要点：原版“反压时内存涨得快”发生在**构造期预留**（缓冲池一次性握段），"
+                      "“回收慢甚至不回收”是**池化复用**（段不回 OS，全程 GC 仅 2–3 次），均非 GC 问题；"
+                      "每通道配额（`maxBuffersPerChannel`）使一慢/一热被封顶在 2 MB 级，拒绝 1984 次。"
+                      "flinkable 侧“拒绝写入 0 次”是尚未实现该信号的如实记录（M149 计划补封顶与拒绝）；"
+                      "非对齐检查点在我们引擎里对 in-flight 数据做字节克隆，形成真实 2× 峰值，而原版 "
+                      "BufferConsumer 共享同一段内存、额外拷贝≈0；排空后 RSS 是否回落取决于分配器能否归还"
+                      "连续空闲块（归并/广播回落，停读/倾斜部分保留），属碎片而非泄漏。" + interp_note]
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(
         "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()
