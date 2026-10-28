@@ -52,6 +52,18 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(dirs[("test.ROCKSDB.20", "score")], "higher_is_better")
         self.assertEqual(dirs[("updateAverage", "score")], "lower_is_better")
 
+    def test_jmh_csv_default_confidence_error_kept(self):
+        # JMH writes "Score Error (99.9%)" unless a confidence was requested;
+        # the error bar must survive ingestion either way.
+        csv_text = ('Benchmark,Mode,Threads,Samples,Score,Score Error (99.9%),Unit\n'
+                    'org.apache.flink.benchmark.WindowBenchmarks.globalWindow,'
+                    'thrpt,1,7,5478.578,154.666,ops/ms\n')
+        n = ingest.ingest_jmh_csv(self.con, "jmh-conf-run", csv_text)
+        self.assertEqual(n, 1)
+        rows = {(c, m): v for (c, m, v, _, _) in store.rows_of_run(self.con, "jmh-conf-run")}
+        self.assertAlmostEqual(rows[("globalWindow", "score")], 5478.578)
+        self.assertAlmostEqual(rows[("globalWindow", "error")], 154.666)
+
     def test_measured_ingest(self):
         n = ingest.ingest_measured_log(self.con, self.run, MEASURED)
         rows = {(c, m): v for (c, m, v, _, _) in store.rows_of_run(self.con, self.run)}

@@ -43,7 +43,9 @@ def ingest_jmh_csv(con, run_id, text):
         raise ValueError("not a JMH csv: missing Benchmark/Score columns")
     bi, mi = header.index("Benchmark"), header.index("Mode")
     si, ui = header.index("Score"), header.index("Unit") if "Unit" in header else None
-    ei = header.index("Score Error (99.9999%)") if "Score Error (99.9999%)" in header else None
+    # JMH spells the confidence into the column name (99.9% by default,
+    # 99.9999% when asked), so match on the prefix rather than one literal.
+    ei = next((i for i, h in enumerate(header) if h.startswith("Score Error")), None)
     pidx = [i for i, h in enumerate(header) if h.startswith("Param")]
     count = 0
     for row in reader:

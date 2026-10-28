@@ -47,12 +47,15 @@ def parse_csv(path):
             short = bench.split(".")[-1]
             params = ",".join(row[i].strip() for i in pidx if row[i].strip())
             err = ""
-            if "Score Error (99.9999%)" in idx and row[idx["Score Error (99.9999%)"]].strip():
-                err = row[idx["Score Error (99.9999%)"]]
+            ekey = next((k for k in idx if k.startswith("Score Error")), None)
+            if ekey and row[idx[ekey]].strip():
+                err = "%.1f" % float(row[idx[ekey]])
             rows.append({
                 "case": short + ("." + params if params else ""),
                 "mode": row[idx["Mode"]],
-                "cnt": row[idx.get("Cnt", 0)] if "Cnt" in idx else "",
+                # JMH labels the measurement count "Samples" in recent
+                # versions and "Cnt" in older ones.
+                "cnt": next((row[idx[k]] for k in ("Samples", "Cnt") if k in idx), ""),
                 "score": float(row[idx["Score"]]),
                 "error": err,
                 "unit": row[idx["Unit"]] if "Unit" in idx else "",
@@ -127,7 +130,7 @@ def main():
     lines += ["## 结果", ""]
     for group, rows in groups:
         lines += ["### %s" % group, "",
-                  "| 用例 | 模式 | 迭代数 | 得分 | 误差 (99.9999%) | 单位 |",
+                  "| 用例 | 模式 | 迭代数 | 得分 | 误差 (99.9%) | 单位 |",
                   "| --- | --- | --- | --- | --- | --- |"]
         for row in sorted(rows, key=lambda r: r["case"]):
             lines.append("| %s | %s | %s | %s | %s | %s |" % (
