@@ -16,9 +16,19 @@
 # under the License.
 """Ingestion and regression unit tests (no rig access needed)."""
 
+import os
+import tempfile
 import unittest
 
-from flinkbench import gate, ingest, regression, store
+from flinkbench import chart, gate, ingest, regression, store
+
+# Faithful to what flink_baseline.sh produces: one "Param: <name>" column,
+# "Samples" for the iteration count, and the default 99.9% error column.
+STAGE1_CSV = """Benchmark,Mode,Threads,Samples,Score,Score Error (99.9%),Unit,Param: stateBackend
+org.apache.flink.benchmark.WindowBenchmarks.globalWindow,thrpt,1,7,5478.578,154.666,ops/ms,
+org.apache.flink.benchmark.WindowBenchmarks.slidingWindow,thrpt,1,7,582.532,16.275,ops/ms,
+org.apache.flink.benchmark.RocksStateBackendBenchmark.stateBackends,thrpt,1,7,3433.108,81.173,ops/ms,ROCKS
+"""
 
 JMH_CSV = """Benchmark,Mode,Fork,Java,VM,Threads,Extra,Param,Param,Score,Score Error (99.9999%),Unit
 org.apache.flink.benchmark.WordCountBenchmark.test,thrpt,1,17,server,4,,ROCKSDB,20,12345.678,100.5,ops/s
@@ -210,3 +220,30 @@ class GateTest(unittest.TestCase):
         self.assertGreater(rows[0][2], 150.0, "median must sit in the recent regime")
 
 
+class Stage1ChartTest(unittest.TestCase):
+    def setUp(self):
+        self.con = store.connect(":memory:")
+
+    def _ingest(self, suite):
+        run = store.add_run(self.con, "rig", suite, "fabperf-20261028T000000Z-window")
+        ingest.ingest_jmh_csv(self.con, run, STAGE1_CSV)
+
+    def test_stage1_figure_renders_both_groups(self):
+        self._ingest("jmh")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "stage1.png")
+            self.assertEqual(chart.render_stage1(self.con, path, run_note="discipline"), path)
+            self.assertGreater(os.path.getsize(path), 10000)
+
+    def test_stage1_figure_handles_a_single_group(self):
+        self._ingest("jmh")
+        self.con.execute("DELETE FROM metrics WHERE case_name = 'stateBackends.ROCKS'")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "stage1.png")
+            self.assertEqual(chart.render_stage1(self.con, path), path)
+            self.assertTrue(os.path.exists(path))
+
+    def test_stage1_cases_are_not_report_rows_without_a_jmh_run(self):
+        self._ingest("native")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(chart.render_stage1(self.con, os.path.join(tmp, "stage1.png")))

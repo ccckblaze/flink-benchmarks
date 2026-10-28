@@ -21,8 +21,13 @@ Layout mirrors what a flink-benchmarks Codespeed page tells you per benchmark
 same-screen chart embedded. Terminology always goes through `terms.py`.
 """
 
+import re
+
 from . import chart, regression
 from .terms import case_label, metric_label, unit_label
+
+STAGE1_DISCIPLINE = ("绑核 cpu0 · 同物理核 SMT 兄弟下线 · 7 迭代 × 20 s · Xmx4g · "
+                     "ActiveProcessorCount=1 · glibc 分配器 · Flink 2.3.0")
 
 STAGE1_ORDER = [
     "globalWindow", "tumblingWindow", "slidingWindow", "sessionWindow",
@@ -76,6 +81,17 @@ def _value(con, case, metric):
     return row[0] if row else 0.0
 
 
+def _stage1_run_note(con):
+    """Fixed discipline of flink_baseline.sh, plus the run id it came from."""
+    row = con.execute(
+        "SELECT source FROM runs WHERE suite = 'jmh' ORDER BY id DESC LIMIT 1").fetchone()
+    match = re.search(r"fabperf-(\d{8}T\d{6}Z)", row[0]) if row else None
+    parts = [STAGE1_DISCIPLINE]
+    if match:
+        parts.append("run " + match.group(1))
+    return " · ".join(parts)
+
+
 def generate(con, out_dir, title, env_lines):
     import os
 
@@ -86,6 +102,10 @@ def generate(con, out_dir, title, env_lines):
     seen = set()
     rows = _latest_rows(con)
     stage1 = _stage1_cases(con)
+    stage1_png = None
+    if stage1 and chart.render_stage1(con, os.path.join(out_dir, "stage1.png"),
+                                      run_note=_stage1_run_note(con)):
+        stage1_png = "stage1.png"
     lines = ["# " + title, ""]
     lines += ["%s" % env for env in env_lines]
     lines += ["", "![关键指标同屏对比](%s)" % png, ""]
@@ -259,21 +279,21 @@ def generate(con, out_dir, title, env_lines):
                       "停读期间 RSS 持平基线，正说明满队列被封顶在预算内、逐级回传为端到端反压，"
                       "而非在引擎里无界堆积。"]
     if stage1:
-        lines += ["", "## 阶段一：单核吞吐基线（官方 flink-benchmarks JMH，仅 Flink 腿）", "",
+        lines += ["", "## 阶段一：单核吞吐基线（官方 flink-benchmarks JMH，仅 Flink 腿）", ""]
+        if stage1_png:
+            lines += ["![阶段一单核吞吐基线](%s)" % stage1_png, ""]
+        lines += ["",
                   "| 用例 | Flink 基线 | 误差 (99.9%) | 单位 | Flinkable 同形腿 |",
                   "| --- | --- | --- | --- | --- |"]
         for case in [c for c in STAGE1_ORDER if c in stage1] + sorted(
                 stage1 - set(STAGE1_ORDER)):
-            score = _value(con, case, "score")
-            err = _value(con, case, "error")
-            unit = con.execute(
-                "SELECT unit FROM metrics WHERE case_name = ? AND metric = 'score' LIMIT 1",
-                (case,)).fetchone()
+            score = chart._latest(con, case, "score")
             if score is None:
                 continue
+            err = chart._latest(con, case, "error")
             lines.append("| %s | %.0f | ±%s | %s | 待补 |" % (
-                case_label(case), score, "—" if err is None else "%.0f" % err,
-                unit_label(unit[0]) if unit else ""))
+                case_label(case), score[0], "—" if err is None else "%.0f" % err[0],
+                unit_label(score[1])))
         lines += ["", "口径：单核（绑核 + 关同物理核 SMT 兄弟）、7 迭代 × 20 s、Flink 2.3.0、"
                       "官方 JMH 类，控制变量逐项记录在 run 目录 `env.json`。此表**不是跨引擎对比**，"
                       "Flinkable 同形腿受 `fab-windows`、类型化记录通路等 P-A 阻塞项制约，待补测后另开面板。", "",

@@ -700,3 +700,90 @@ def _draw_trend(fig, gs, row, trend):
     ax.legend(fontsize=7.5, loc="upper left", bbox_to_anchor=(0.0, -0.14, 1.0, 0.24),
               mode="expand", ncol=3, framealpha=1.0)
     ax.grid(axis="y", which="both", alpha=0.25)
+
+
+# --- stage-1 single-core baseline (official flink-benchmarks JMH) -------------
+STAGE1_GROUPS = [
+    ("窗口聚合｜组内最快最慢相差 9.4 倍，是有效区分项",
+     ["globalWindow", "tumblingWindow", "slidingWindow", "sessionWindow"], BLUE, None),
+    ("状态后端｜四腿挤在一起，读数不度量状态访问（见告警）",
+     ["stateBackends.MEMORY", "stateBackends.FS", "stateBackends.ROCKS",
+      "stateBackends.ROCKS_INC"], GRAY,
+     "四腿最大只差 6.6%：上游 StateBackendBenchmarkBase 把键空间写死 1000 键、\n"
+     "10000 s 窗口在测量期内永不触发、迭代期间无检查点，量的是 source→map→\n"
+     "keyBy→window 管道。跨引擎对比前须两侧同时放大键空间并打开检查点。"),
+]
+
+
+def stage1_cases(con):
+    """Cases whose latest value came from an official JMH (stage-1) run."""
+    return {row[0] for row in con.execute(
+        """SELECT DISTINCT m.case_name FROM metrics m
+           JOIN runs r ON r.id = m.run_id WHERE r.suite = 'jmh'""")}
+
+
+def render_stage1(con, out_path, run_note=""):
+    """The Flink-only stage-1 baseline: bars with JMH error bars, per group.
+
+    Deliberately not merged into the comparison figure - these cases have one
+    leg only, and a lone Flink bar next to an absent Flinkable bar would read
+    as a verdict the control variables do not support.
+    """
+    from .terms import case_label, unit_label
+
+    cases = stage1_cases(con)
+    drawn = [group for group in STAGE1_GROUPS if any(c in cases for c in group[1])]
+    if not drawn:
+        return None
+
+    fig, axes = plt.subplots(1, len(drawn), figsize=(7.0 * len(drawn), 5.0))
+    axes = [axes] if len(drawn) == 1 else list(axes)
+    for ax, (heading, wanted, color, warning) in zip(axes, drawn):
+        names = [c for c in wanted if c in cases]
+        values, errors, units = [], [], ""
+        for case in names:
+            score = _latest(con, case, "score")
+            error = _latest(con, case, "error")
+            values.append(score[0])
+            units = score[1]
+            errors.append(0.0 if error is None else error[0])
+        # Shorten "窗口聚合：全局窗口" to "全局窗口" so the tick labels stay narrow.
+        labels = [case_label(c).split("：")[-1] for c in names]
+        ypos = range(len(names))
+        ax.barh(ypos, values, height=0.62, color=color, alpha=0.9,
+                xerr=errors, error_kw={"ecolor": "#444444", "elinewidth": 1.1, "capsize": 3})
+        for y, value, error in zip(ypos, values, errors):
+            ax.annotate("%s ±%s" % (format(value, ".0f"), format(error, ".0f")),
+                        (value + error, y), xytext=(6, 0), textcoords="offset points",
+                        va="center", fontsize=9, color="#222222")
+        ax.set_yticks(list(ypos), labels, fontsize=9.5)
+        ax.invert_yaxis()
+        ax.set_xlim(0, max(values) * 1.34)
+        ax.set_xlabel("吞吐（%s，越高越好）" % unit_label(units), fontsize=9)
+        ax.set_title(heading, fontsize=10.5, loc="left", pad=8)
+        ax.grid(axis="x", alpha=0.25)
+        ax.set_axisbelow(True)
+        # The note lives in a reserved empty band under the last bar; drawing
+        # it at the bottom of the axes overlapped the last case's value label.
+        if warning:
+            note, note_color, face, edge, reserve = (
+                warning, "#8a2a2a", "#fdf1f1", "#d9a2a2", 1.9)
+        else:
+            note, note_color, face, edge, reserve = (
+                "Flinkable 同形腿：待补（阻塞于 P-A：fab-windows、类型化记录通路）",
+                "#3066be", "#eef3fb", "#b7c8e8", 1.25)
+        ax.text(0.015, 0.015, note, transform=ax.transAxes, fontsize=8.2,
+                va="bottom", ha="left", color=note_color,
+                bbox=dict(boxstyle="round,pad=0.35", facecolor=face,
+                          edgecolor=edge, alpha=0.95))
+        ax.set_ylim(len(names) - 0.5 + reserve, -0.5)
+        ax.margins(x=0)
+
+    fig.suptitle("阶段一｜单核吞吐基线（Flink 原版，官方 flink-benchmarks JMH）",
+                 fontsize=13, fontweight="bold", y=0.985)
+    if run_note:
+        fig.text(0.5, 0.935, run_note, ha="center", fontsize=8.8, color="#555555")
+    fig.tight_layout(rect=(0, 0, 1, 0.925))
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+    return out_path
