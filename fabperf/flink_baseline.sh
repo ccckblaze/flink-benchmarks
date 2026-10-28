@@ -23,6 +23,10 @@
 # with
 #   python3 benchctl.py ingest-jmh <csv> --host <box> \
 #       --source fabperf-<runid>-<group>
+#
+# Groups: window (WindowBenchmarks), cardinality
+# (KeyedStateCardinalityBenchmark, the corrected keyed-state sweep), state-memory and state-rocks
+# (the official state group, kept only for continuity: it never changes backend, see README).
 set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -33,7 +37,8 @@ WARMUP=${WARMUP:-2}
 ITERATIONS=${ITERATIONS:-7}
 ITER_TIME=${ITER_TIME:-20s}
 XMX=${XMX:-4g}
-BENCH_GROUPS=${BENCH_GROUPS:-window state-memory state-rocks}
+BENCH_GROUPS=${BENCH_GROUPS:-window cardinality}
+CLOCK_CALIB=${CLOCK_CALIB:-1}
 JAR=${JAR:-}
 ENV_ONLY=${ENV_ONLY:-0}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
@@ -89,6 +94,21 @@ if [[ "$ENV_ONLY" == "1" ]]; then
   exit 0
 fi
 
+# --- effective clock ----------------------------------------------------------
+# The box exposes no usable PMU, so proposal section 3.3's cycles-per-record metric cannot be
+# counted. A dependent ALU chain of two self-validating lengths estimates the clock the benchmark
+# actually runs at; ingest uses it to convert ns/record into cycles/record, labelled as an estimate.
+calibrate_clock() {
+  local classes=/tmp/clockcalib
+  mkdir -p "$classes"
+  javac -d "$classes" fabperf/java/ClockCalib.java
+  local seconds=${CALIB_SECONDS:-10}
+  # Run on the same core, with the SMT sibling in the same state as the benchmark runs.
+  taskset -c "$CORE" java -XX:ActiveProcessorCount=1 -cp "$classes" ClockCalib "$seconds" \
+    > "$OUT_DIR/clockcalib.txt" 2>&1
+  cat "$OUT_DIR/clockcalib.txt"
+}
+
 # --- jar ----------------------------------------------------------------------
 find_jar() {
   # The shade plugin emits target/benchmarks.jar; older builds used the
@@ -111,6 +131,10 @@ fi
 echo "jar: $JAR"
 snapshot_env
 
+if [[ "$CLOCK_CALIB" == "1" ]]; then
+  calibrate_clock
+fi
+
 # --- groups -------------------------------------------------------------------
 run_group() {
   local name=$1 pattern=$2
@@ -132,6 +156,7 @@ for group in $BENCH_GROUPS; do
     window)       run_group window "org.apache.flink.benchmark.WindowBenchmarks" ;;
     state-memory) run_group state-memory "org.apache.flink.benchmark.MemoryStateBackendBenchmark" ;;
     state-rocks)  run_group state-rocks "org.apache.flink.benchmark.RocksStateBackendBenchmark" ;;
+    cardinality)  run_group cardinality "org.apache.flink.benchmark.KeyedStateCardinalityBenchmark" ;;
     *) echo "unknown group: $group" >&2; exit 1 ;;
   esac
 done

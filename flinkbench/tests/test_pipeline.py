@@ -46,6 +46,20 @@ P57-FUSE chained=120 ns/rec fused=77 ns/rec speedup=1.55x records=2000000
 """
 
 
+# What KeyedStateCardinalityBenchmark produces: two @Param columns, JMH listing
+# them in declaration order (numberOfKeys first), so ingest yields
+# keyedState.<keys>.<backend>. Values are synthetic but shaped like real legs.
+KEYED_STATE_CSV = """Benchmark,Mode,Threads,Samples,Score,Score Error (99.9%),Unit,Param: numberOfKeys,Param: stateBackend
+org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState,thrpt,1,7,4275.755,40.112,ops/ms,1,hashmap
+org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState,thrpt,1,7,1073.240,12.480,ops/ms,1000,hashmap
+org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState,thrpt,1,7,121.500,3.210,ops/ms,100000,hashmap
+org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState,thrpt,1,7,28.400,1.050,ops/ms,1000000,hashmap
+org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState,thrpt,1,7,225.984,6.740,ops/ms,1,rocksdb
+org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState,thrpt,1,7,198.300,5.120,ops/ms,1000,rocksdb
+org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState,thrpt,1,7,96.200,4.010,ops/ms,100000,rocksdb
+org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState,thrpt,1,7,31.700,2.330,ops/ms,1000000,rocksdb
+"""
+
 class StoreTest(unittest.TestCase):
     def setUp(self):
         self.con = store.connect(":memory:")
@@ -83,6 +97,45 @@ class StoreTest(unittest.TestCase):
         self.assertAlmostEqual(rows[("serde_int_long", "flink_jvm")], 13.0)
         self.assertAlmostEqual(rows[("smallbatch_16", "transfer_ratio")], 3.93)
         self.assertAlmostEqual(rows[("operator_fusion", "speedup")], 1.55)
+
+
+class KeyedStateSweepTest(unittest.TestCase):
+    """The corrected state group: case naming, docs labels, and the figure."""
+
+    def setUp(self):
+        self.con = store.connect(":memory:")
+        run = store.add_run(self.con, "unit", "jmh", "fabperf-TESTRUN-cardinality")
+        self.assertEqual(ingest.ingest_jmh_csv(self.con, run, KEYED_STATE_CSV), 8)
+
+    def test_series_is_scaled_to_mops_per_s(self):
+        series = chart.keyed_state_series(self.con)
+        self.assertEqual(len(series), 8)
+        # 4275.755 ops/ms = 4.276 Mops/s
+        self.assertAlmostEqual(series[("1", "hashmap")][0], 4.275755, places=4)
+        self.assertAlmostEqual(series[("1", "rocksdb")][0], 0.225984, places=4)
+
+    def test_only_sweep_cases_are_recognised(self):
+        cases = chart.keyed_state_cases(self.con)
+        self.assertEqual(len(cases), 8)
+        self.assertTrue(all(c.startswith("keyedState.") for c in cases))
+
+    def test_labels_use_the_docs_backend_names(self):
+        from flinkbench.terms import case_label, case_short_label
+        self.assertEqual(case_label("keyedState.1000.hashmap"),
+                         "HashMapStateBackend（键基数 1 千）")
+        self.assertEqual(case_short_label("keyedState.1000.rocksdb"), "RocksDB · 1 千键")
+
+    def test_sweep_figure_renders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "keyed_state.png")
+            self.assertEqual(chart.render_keyed_state(self.con, out, run_note="test"), out)
+            self.assertGreater(os.path.getsize(out), 20000)
+
+    def test_sweep_figure_skipped_without_data(self):
+        empty = store.connect(":memory:")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(chart.render_keyed_state(
+                empty, os.path.join(tmp, "none.png")))
 
 
 class RegressionTest(unittest.TestCase):

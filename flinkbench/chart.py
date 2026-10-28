@@ -33,6 +33,7 @@ plt.rcParams["axes.unicode_minus"] = False
 
 BLUE = "#3066be"
 GRAY = "#9aa0a6"
+ORANGE = "#c15b1f"
 
 
 def _latest(con, case, metric):
@@ -706,7 +707,7 @@ def _draw_trend(fig, gs, row, trend):
 STAGE1_GROUPS = [
     ("窗口分配器（Window Assigners）｜最快与最慢相差 9.4 倍，是有效区分项",
      ["globalWindow", "tumblingWindow", "slidingWindow", "sessionWindow"], BLUE, None),
-    ("状态后端与检查点存储｜四腿只差 6.6%，读数不反映状态访问",
+    ("状态后端与检查点存储｜四腿实为同一后端，不构成对比（见修正组）",
      ["stateBackends.MEMORY", "stateBackends.FS", "stateBackends.ROCKS",
       "stateBackends.ROCKS_INC"], GRAY,
      "上游 StateBackendBenchmarkBase 把键基数固定为 1000（numberOfElements=1000）、窗口是\n"
@@ -718,9 +719,12 @@ STAGE1_GROUPS = [
 # No ✓/✗ here on purpose: PingFang SC has no U+2713/U+2717 and they render as tofu.
 STAGE1_COVERAGE = (
     "提案 §3.3 三项指标覆盖：① 单核吞吐【已测】（本图，按 §3.3 折算为 Mops/s）；"
-    "② 每记录 CPU 周期 / IPC【未测】—— 本机 PMU 不计数，`perf stat` 对 cycles/instructions "
-    "恒返回 140737488355327，需裸金属或开放 PMU 的虚机；"
-    "③ 窗口触发频率 / 状态读写放大【未测】—— 官方 JMH 用例不暴露算子度量，需在 harness 侧打点。")
+    "② 每记录 CPU 周期【折算】—— 本机 PMU 不计数，`perf stat` 对 cycles/instructions 恒返回 "
+    "140737488355327，改以依赖 ALU 链标定有效主频后由 ns/记录 折算，标定跨四组条件为 "
+    "3.1995–3.2220 GHz（±0.7%），两种链长自校验差 ≤0.26%，非计数器读数；IPC【未测】——"
+    " 它需要指令数，无 PMU 无法折算；"
+    "③ 窗口触发频率 / 状态读写放大【未测】—— 官方 JMH 用例不暴露算子度量，需在 harness 侧打点，"
+    "键基数扫描（修正组）给出的是其可观测侧影。")
 
 # JMH reports ops/ms; the proposal reports Mops/s (section 3.3).
 UNIT_TO_MOPS = {"ops/ms": 1.0 / 1000.0, "ops/s": 1.0 / 1e6}
@@ -796,6 +800,144 @@ def render_stage1(con, out_path, run_note=""):
     fig.text(0.5, 0.015, STAGE1_COVERAGE, ha="center", va="bottom", fontsize=7.8,
              color="#666666", wrap=True)
     fig.tight_layout(rect=(0, 0.085, 1, 0.905))
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+    return out_path
+
+
+# --- keyed-state cardinality sweep (KeyedStateCardinalityBenchmark) -----------
+# The official state group cannot show this: its four legs all ran
+# HashMapStateBackend, and it pins the cardinality at 1000. This figure is the
+# corrected measurement, and it is the one that says where Flink's keyed state
+# stops being cache-resident, i.e. where a native engine has the most to gain.
+KEYED_STATE_COLORS = {"hashmap": BLUE, "rocksdb": ORANGE}
+
+KEYED_STATE_FOOTER = (
+    "方法：本组是官方 state 组的修正替代。官方 StateBackendBenchmarkBase 构造的 Configuration 从未被应用"
+    "（局部变量出作用域），且 FlinkEnvironmentContext 在 createConfiguration() 之后强制 "
+    "state.backend=hashmap，四腿实为同一后端；键基数亦固定在 1000。本组在 fork 内新增用例，不改上游文件，"
+    "以 job 级配置覆盖（StateBackendLoader 先并集群配置、再以作业配置覆盖），并打开一个任何一次运行都"
+    "触发不了的检查点间隔——后端只有在作业图携带检查点设置时才会从配置解析，这是官方四腿失效的第二层原因。"
+    "两腿均用【已测】口径校验：StateBackendLoader 分别解析为 HashMapStateBackend 与 "
+    "EmbeddedRocksDBStateBackend。")
+
+
+def keyed_state_cases(con):
+    """Cases from the corrected keyed-state sweep, ordered by cardinality then backend."""
+    from .terms import KEYED_STATE_CASES
+    return [c for c in KEYED_STATE_CASES if c in stage1_cases(con)]
+
+
+def keyed_state_series(con):
+    """{(keys, backend): (mops_per_s, error_mops_per_s)} for the sweep."""
+    from .terms import KEYED_STATE_CARDINALITIES, KEYED_STATE_BACKENDS
+    out = {}
+    for keys, _, _ in KEYED_STATE_CARDINALITIES:
+        for backend, _, _ in KEYED_STATE_BACKENDS:
+            case = "keyedState.%s.%s" % (keys, backend)
+            score = _latest(con, case, "score")
+            if not score:
+                continue
+            scale = UNIT_TO_MOPS.get(score[1], 1.0)
+            error = _latest(con, case, "error")
+            out[(keys, backend)] = (
+                score[0] * scale,
+                0.0 if error is None else error[0] * scale,
+            )
+    return out
+
+
+def render_keyed_state(con, out_path, run_note=""):
+    """Cardinality sweep: throughput lines plus the RocksDB/HashMap cost ratio."""
+    from .terms import (KEYED_STATE_BACKENDS, KEYED_STATE_CARDINALITIES,
+                        case_short_label)
+
+    series = keyed_state_series(con)
+    if not series:
+        return None
+
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(14.0, 5.6))
+
+    # Panel A: throughput against cardinality. The dynamic range spans orders of
+    # magnitude once RocksDB is really used, so the axis is logarithmic and says so.
+    # A true log axis: 1 -> 1e3 -> 1e5 -> 1e6 is 3, 2 and 1 decades apart, so
+    # categorical equal spacing would have hidden where the knee actually sits.
+    for backend, backend_cn, backend_short in KEYED_STATE_BACKENDS:
+        other_be = "rocksdb" if backend == "hashmap" else "hashmap"
+        pts = [(keys, float(keys), series[(keys, backend)][0],
+                series[(keys, backend)][1])
+               for keys, _, _ in KEYED_STATE_CARDINALITIES
+               if (keys, backend) in series]
+        if not pts:
+            continue
+        xpos = [p[1] for p in pts]
+        vals = [p[2] for p in pts]
+        errs = [p[3] for p in pts]
+        ax.errorbar(xpos, vals, yerr=errs, marker="o", lw=2.0, ms=6,
+                    color=KEYED_STATE_COLORS[backend], label=backend_cn,
+                    ecolor=KEYED_STATE_COLORS[backend], elinewidth=1.2, capsize=3)
+        # The two series converge at high cardinality, so a fixed side per series
+        # made a label land on the other line. Each point is labelled away from
+        # whichever series is on top there; the axis keeps headroom for the lower.
+        for keys, x, value, _err in pts:
+            other = series.get((keys, other_be))
+            above = other is None or value >= other[0]
+            ax.annotate("%.*f" % (2 if value < 10 else 1, value), (x, value),
+                        xytext=(0, 11 if above else -17),
+                        textcoords="offset points", ha="center",
+                        va="bottom" if above else "top",
+                        fontsize=8.6, color=KEYED_STATE_COLORS[backend])
+    ax.set_xscale("log")
+    ax.set_xticks([float(keys) for keys, _, _ in KEYED_STATE_CARDINALITIES])
+    ax.set_xticklabels([cn for _, _, cn in KEYED_STATE_CARDINALITIES], fontsize=9.5)
+    ax.set_xlim(0.6, 1.8e6)
+    ax.set_yscale("log")
+    ax.margins(y=0.22)
+    ax.set_xlabel("键基数（key cardinality，对数刻度）", fontsize=9.5)
+    ax.set_ylabel("单核吞吐（百万操作/秒 Mops/s，对数轴，越高越好）", fontsize=9)
+    ax.set_title("状态访问吞吐随键基数的衰减｜工作集越过末级缓存的拐点",
+                 fontsize=10.5, loc="left", pad=8)
+    ax.grid(axis="y", alpha=0.25)
+    ax.set_axisbelow(True)
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.95)
+    ax.margins(x=0.06)
+
+    # Panel B: how much the backend costs, per cardinality. Ratio form keeps the
+    # comparison honest across a range where the absolute values move by orders.
+    ratios, ratio_errs, labels = [], [], []
+    for keys, _, keys_short in KEYED_STATE_CARDINALITIES:
+        fast, slow = series.get((keys, "hashmap")), series.get((keys, "rocksdb"))
+        if not fast or not slow or slow[0] <= 0:
+            continue
+        ratio = fast[0] / slow[0]
+        relative = ((fast[1] / fast[0]) ** 2 + (slow[1] / slow[0]) ** 2) ** 0.5
+        ratios.append(ratio)
+        ratio_errs.append(ratio * relative)
+        labels.append(keys_short)
+    if ratios:
+        ax2.bar(range(len(ratios)), ratios, width=0.55, color=GRAY, alpha=0.9,
+                yerr=ratio_errs,
+                error_kw={"ecolor": "#444444", "elinewidth": 1.1, "capsize": 3})
+        for i, (value, err) in enumerate(zip(ratios, ratio_errs)):
+            ax2.annotate("%.2f 倍" % value, (i, value + err), xytext=(0, 5),
+                         textcoords="offset points", ha="center", fontsize=9,
+                         color="#222222")
+        ax2.axhline(1.0, color="#888888", lw=0.9, ls="--")
+        ax2.set_xticks(range(len(ratios)), labels, fontsize=9.5)
+        ax2.set_ylim(0, max(ratios) * 1.28)
+        ax2.set_ylabel("HashMap ÷ RocksDB（倍）", fontsize=9)
+        ax2.set_title("同形管道下 RocksDB 的状态访问开销倍数", fontsize=10.5, loc="left",
+                      pad=8)
+        ax2.grid(axis="y", alpha=0.25)
+        ax2.set_axisbelow(True)
+
+    fig.suptitle("阶段一（修正）｜键基数扫描：真实切换状态后端后的 keyed state 基线",
+                 fontsize=13, fontweight="bold", y=0.99)
+    if run_note:
+        fig.text(0.5, 0.928, run_note, ha="center", fontsize=8.8, color="#555555")
+    fig.text(0.5, 0.012, KEYED_STATE_FOOTER, ha="center", va="bottom", fontsize=7.4,
+             color="#666666", wrap=True)
+    fig.tight_layout(rect=(0, 0.115, 1, 0.90))
     fig.savefig(out_path, dpi=160)
     plt.close(fig)
     return out_path

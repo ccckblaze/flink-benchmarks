@@ -177,6 +177,39 @@ CASE_SHORT_LABELS = {
     "stateBackends.ROCKS_INC": "RocksDB · 增量检查点",
 }
 
+# KeyedStateCardinalityBenchmark: case names come out of ingest as
+# keyedState.<numberOfKeys>.<stateBackend>, in the order JMH lists the @Param fields.
+# Backend names are the docs' class names (ops/state/state_backends.md); the values
+# hashmap/rocksdb are the documented `state.backend` shortcuts.
+KEYED_STATE_CARDINALITIES = [
+    ("1", "1", "1 键"),
+    ("1000", "1 千", "1 千键"),
+    ("100000", "10 万", "10 万键"),
+    ("1000000", "100 万", "100 万键"),
+]
+KEYED_STATE_BACKENDS = [
+    ("hashmap", "HashMapStateBackend", "HashMap"),
+    ("rocksdb", "EmbeddedRocksDBStateBackend", "RocksDB"),
+]
+
+
+def keyed_state_case(keys, backend):
+    return "keyedState.%s.%s" % (keys, backend)
+
+
+for _keys, _keys_long, _keys_short in KEYED_STATE_CARDINALITIES:
+    for _be, _be_cn, _be_short in KEYED_STATE_BACKENDS:
+        _case = keyed_state_case(_keys, _be)
+        CASE_LABELS[_case] = "%s（键基数 %s）" % (_be_cn, _keys_long)
+        CASE_SHORT_LABELS[_case] = "%s · %s" % (_be_short, _keys_short)
+
+KEYED_STATE_CASES = [
+    keyed_state_case(_keys, _be)
+    for _keys, _, _ in KEYED_STATE_CARDINALITIES
+    for _be, _, _ in KEYED_STATE_BACKENDS
+]
+
+
 UNIT_LABELS = {
     "ops/ms": "操作/毫秒",
     "Mops/s": "百万操作/秒",

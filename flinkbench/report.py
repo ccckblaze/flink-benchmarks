@@ -21,10 +21,13 @@ Layout mirrors what a flink-benchmarks Codespeed page tells you per benchmark
 same-screen chart embedded. Terminology always goes through `terms.py`.
 """
 
+import os
 import re
 
 from . import chart, regression
 from .terms import case_label, metric_label, unit_label
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 STAGE1_DISCIPLINE = ("`taskset` 绑核 cpu0 · 关闭同物理核超线程（SMT）兄弟核 · 7 迭代 × 20 s · "
                      "Xmx4g · ActiveProcessorCount=1 · glibc 分配器 · Flink 2.3.0")
@@ -79,6 +82,37 @@ def _has_case(con, case):
 def _value(con, case, metric):
     row = chart._latest(con, case, metric)
     return row[0] if row else 0.0
+
+
+def _stage1_run_id(con):
+    """Run id embedded in the latest JMH provenance tag, or None."""
+    row = con.execute(
+        "SELECT source FROM runs WHERE suite = 'jmh' ORDER BY id DESC LIMIT 1").fetchone()
+    if not row:
+        return None
+    match = re.search(r"fabperf-(\d{8}T\d{6}Z)", row[0])
+    return match.group(1) if match else None
+
+
+def _clock_calibration(con):
+    """Effective core clock calibrated beside the results it applies to.
+
+    The box exposes no usable PMU, so cycles/record is only available by
+    converting ns/record with a measured clock. The runner writes that
+    calibration next to the CSVs, which keeps the conversion tied to the run
+    instead of a constant in code. Returns (ghz, source_path) or (None, None).
+    """
+    run_id = _stage1_run_id(con)
+    if not run_id:
+        return None, None
+    path = os.path.join(_REPO_ROOT, "fabperf", "results", run_id, "clockcalib.txt")
+    try:
+        with open(path) as handle:
+            text = handle.read()
+    except OSError:
+        return None, None
+    match = re.search(r"\bghz=([\d.]+)", text)
+    return (float(match.group(1)), path) if match else (None, None)
 
 
 def _stage1_run_note(con):
@@ -310,18 +344,66 @@ def generate(con, out_dir, title, env_lines):
                   "",
                   "| §3.3 指标 | 状态 | 原因 |",
                   "| --- | --- | --- |",
-                  "| 单核吞吐（Mops/s） | ✓ 已测 | 本表与本图 |",
-                  "| 每记录 CPU 周期、IPC | ✗ 未测 | 本机 PMU 不计数：`perf stat -e cycles,instructions` "
-                  "对两项恒返回 140737488355327（未计数哨兵值），需裸金属或开放 PMU 虚机 |",
+                  "| 单核吞吐（Mops/s） | 已测 | 本表与本图 |",
+                  "| 每记录 CPU 周期 | 折算 | 本机 PMU 不计数：`perf stat -e cycles,instructions` 对两项"
+                  "恒返回 140737488355327（未计数哨兵值）。改以依赖 ALU 链标定有效主频，再由 ns/记录 折算，"
+                  "见下表「折算周期/记录」；标定为估计值而非计数值，跨四组条件 3.1995–3.2220 GHz（±0.7%） |",
+                  "| IPC（每周期指令数） | 未测 | IPC 需要指令计数，无 PMU 无法折算，需裸金属或开放 PMU 虚机 |",
                   "| 窗口触发频率、状态读写放大 | ✗ 未测 | 官方 JMH 用例不暴露算子度量"
                   "（无 `numLateRecordsDropped`/trigger 计数），需在 harness 侧打点 |",
                   "",
-                  "**状态后端四腿的读数告警**：`MEMORY`/`FS`/`ROCKS`/`ROCKS_INC` 实测最大只差 6.6%，"
-                  "这不代表状态访问成本接近，而是上游 `StateBackendBenchmarkBase` 把键基数固定为 1000"
-                  "（`numberOfElements = 1000`）、负载窗口是 10000 s 的滚动窗口且在测量期内永不触发、"
-                  "迭代期间又没有检查点，`EmbeddedRocksDBStateBackend` 的工作集全留在 memtable 与块缓存里"
-                  "——该组量的是 `source→map→keyBy→window` 管道。要在这一组出有意义的跨引擎对比，"
-                  "必须两侧同时放大键基数并打开检查点。"]
+                  "**状态后端四腿为何无效（已定位到根因）**：`MEMORY`/`FS`/`ROCKS`/`ROCKS_INC` 实测最大"
+                  "只差 6.6%，不是状态访问成本接近，而是**四腿从头到尾都在跑同一个后端**。两层原因："
+                  "① `StateBackendBenchmarkBase.StateBackendContext.setUp()` 构造的 `Configuration` 是"
+                  "局部变量、从未被应用到环境，随后 `FlinkEnvironmentContext.setUp()` 又在"
+                  "`createConfiguration()` 之后强制 `state.backend=hashmap`；② 即使把值写进作业配置也不够"
+                  "——`DefaultExecutionGraphBuilder` 只在「作业图携带检查点设置」的分支里解析状态后端，"
+                  "关检查点时这条解析路径根本不会走。修正组已同时绕开这两点并逐项验证（见下节）。"
+                  "此外该组把键基数固定在 1000，且 `MemoryStateBackendBenchmark` 用 7\,000\,000 条记录而"
+                  "`RocksStateBackendBenchmark` 用 2\,000\,000 条，两组之间本身也不可比较。"]
+        keyed = chart.keyed_state_series(con)
+        if keyed:
+            keyed_png = chart.render_keyed_state(
+                con, os.path.join(out_dir, "keyed_state.png"),
+                run_note=_stage1_run_note(con))
+            ghz, ghz_path = _clock_calibration(con)
+            lines += ["", "## 阶段一（修正）：键基数扫描与状态后端真实切换", ""]
+            if keyed_png:
+                lines += ["![键基数扫描（修正组）](%s)" % keyed_png, ""]
+            lines += ["",
+                      "| 键基数 | HashMapStateBackend | EmbeddedRocksDBStateBackend | RocksDB 开销倍数 |"
+                      " HashMap 每记录 | RocksDB 每记录 | HashMap 折算周期/记录 |"
+                      " RocksDB 折算周期/记录 |",
+                      "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+            from .terms import KEYED_STATE_CARDINALITIES
+            for keys, _keys_long, keys_short in KEYED_STATE_CARDINALITIES:
+                fast, slow = keyed.get((keys, "hashmap")), keyed.get((keys, "rocksdb"))
+                if not fast or not slow:
+                    continue
+                ns_fast, ns_slow = 1000.0 / fast[0], 1000.0 / slow[0]
+                if ghz:
+                    cyc = " | %.0f | %.0f |" % (ns_fast * ghz, ns_slow * ghz)
+                else:
+                    cyc = " | — | — |"
+                lines.append("| %s | %.2f ±%.2f | %.2f ±%.2f | %.2f 倍 | %.1f | %.1f %s" % (
+                    keys_short, fast[0], fast[1], slow[0], slow[1],
+                    fast[0] / slow[0], ns_fast, ns_slow, cyc))
+            lines += ["",
+                      "口径：单位 Mops/s；每记录耗时 = 1000 ÷ Mops/s（纳秒/记录）；周期/记录 = 每记录耗时"
+                      " × 标定主频%s。**标注为折算**：本机无可用 PMU，不是计数器读数。标定主频取自带同一"
+                      " run 目录的 `clockcalib.txt`（依赖 ALU 链，两种链长自校验差 ≤0.26%%）。" % (
+                          "（%.4f GHz）" % ghz if ghz else "（缺标定文件，未折算）"),
+                      "",
+                      "与官方 state 组的差异不是调参，而是三点口径修正：状态后端由作业级配置真正切换并经"
+                      " `StateBackendLoader` 解析结果校验（分别解析为 `HashMapStateBackend` 与"
+                      " `EmbeddedRocksDBStateBackend`）；键基数从固定 1000 展开为 1/1 千/10 万/100 万；"
+                      "记录数统一为 2\,000\,000。打开的检查点间隔为 1 小时，任何一次运行（最长数秒）都"
+                      "触发不到，且 `ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH=false` 已关闭收尾检查点，"
+                      "因此测量路径里没有屏障注入——它只是让配置解析生效的开关，两腿同受此约束。",
+                      "",
+                      "读数意义：两腿差就是「状态后端切换」的真实代价，官方四腿把它显示为 6.6% 是因为"
+                      "它从未切换。这条曲线同时给出 Flinkable 最该争取的区间——吞吐随键基数跌落的位置就是"
+                      "工作集越过末级缓存的拐点，拐点之后每记录成本由访存而非指令数决定。"]
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(
         "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()
