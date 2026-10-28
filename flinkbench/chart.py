@@ -111,11 +111,26 @@ def _bp_stacks(con, case, jvm):
     return during, after_segs, peak, _mb("refused")
 
 
+def _bp_engine_tag(case, jvm):
+    """Short per-pair identity so adjacent bar pairs are distinguishable:
+    which engine does this pair belong to. Derived from the case name — the
+    only thing the reader cannot see from a colour alone."""
+    if case.endswith("_capped"):
+        return "封顶"
+    if jvm or case.endswith("_jvm"):
+        return "原版"
+    return "Rust"
+
+
 def _bp_panel(ax, con, groups, title):
     # M148: one figure per backpressure family. Every engine inside a group
     # gets an adjacent pair of absolute-RSS bars — left bar is the peak while
     # the consumer is stalled, right bar is the RSS once it drained — so the
     # retention question answers itself at a glance. Bars stack by component.
+    # M151 readability: each pair carries its engine tag (Rust/封顶/原版) in a
+    # white box at the baseline, and a light divider separates one group from
+    # the next, so "left-to-right, what am I looking at" is answerable without
+    # the legend.
     from matplotlib.patches import Patch
 
     peak_max, used = 0.0, set()
@@ -132,6 +147,7 @@ def _bp_panel(ax, con, groups, title):
             during, after_segs, peak, refused = st
             x0 = g - 0.4 + (2 * i + 0.5) * half
             x1 = g - 0.4 + (2 * i + 1.5) * half
+            pair_mid = (x0 + x1) / 2.0
             bottom = 0.0
             for size, color, tag in during:
                 if size <= 0:
@@ -167,14 +183,23 @@ def _bp_panel(ax, con, groups, title):
                             ha="center", fontsize=6.5, color=BP_RED)
             else:
                 ax.text(x1, top + 4, "已回落", ha="center", fontsize=6.5, color=BP_GREEN)
+            tag = _bp_engine_tag(case, jvm)
+            ax.annotate(tag, (pair_mid, 0.0), xycoords=("data", "axes fraction"),
+                        xytext=(0, 3), textcoords="offset points", ha="center", va="bottom",
+                        fontsize=7.5, fontweight="bold",
+                        color=BP_PURPLE if tag == "原版" else BLUE,
+                        bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="#bbb", lw=0.5,
+                                  alpha=0.92))
             peak_max = max(peak_max, peak)
+    for g in range(1, len(groups)):
+        ax.axvline(g - 0.5, color="#e2e2e2", lw=0.8, zorder=0)
     order = ["运行时基线", "Rust 引擎", "CPython 解释器", "Python 库", "引擎积压",
              "预算封顶积压", "缓冲池占用", "零拷贝捕获", "持久化拷贝", "快照额外拷贝", "未回落残留"]
     handles = [Patch(color=c, label=t) for t in order for (tag, c) in used if tag == t]
     ax.set_xticks(range(len(groups)), [g[0] for g in groups])
     ax.tick_params(axis="x", labelsize=7)
     ax.set_ylabel("进程常驻内存 RSS（MB，绝对值）")
-    ax.set_title(title, fontsize=10)
+    ax.set_title(title + "\n（每对柱：左=停读峰值 · 右=排空终值；对下白框=所属引擎）", fontsize=10)
     legend_corner = "upper right" if peak_max < 300 else "upper left"
     ax.legend(handles=handles, fontsize=7, loc=legend_corner, ncol=2)
     ax.set_ylim(0, peak_max * 1.30)
