@@ -1,0 +1,1 @@
+CLOCKCALIB ghz_chain2=3.2220 ghz_chain3=3.2217 ghz=3.2219 spread=0.01% seconds=10

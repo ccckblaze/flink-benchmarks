@@ -705,14 +705,15 @@ def _draw_trend(fig, gs, row, trend):
 
 # --- stage-1 single-core baseline (official flink-benchmarks JMH) -------------
 STAGE1_GROUPS = [
-    ("窗口分配器（Window Assigners）｜最快与最慢相差 9.4 倍，是有效区分项",
+    ("窗口分配器（Window Assigners）｜最快与最慢相差 {window_spread} 倍，是有效区分项",
      ["globalWindow", "tumblingWindow", "slidingWindow", "sessionWindow"], BLUE, None),
     ("状态后端与检查点存储｜四腿实为同一后端，不构成对比（见修正组）",
      ["stateBackends.MEMORY", "stateBackends.FS", "stateBackends.ROCKS",
       "stateBackends.ROCKS_INC"], GRAY,
-     "上游 StateBackendBenchmarkBase 把键基数固定为 1000（numberOfElements=1000）、窗口是\n"
-     "10000 s 的滚动窗口且在测量期内不触发、迭代期间没有检查点，四腿量的是 source→map→\n"
-     "keyBy→window 管道，不是状态访问成本。跨引擎对比前须两侧同时放大键基数并打开检查点。"),
+     "上游 StateBackendBenchmarkBase 构造的 Configuration 从未被应用，且集群配置被强制\n"
+     "state.backend=hashmap；后端解析又只在作业图携带检查点设置时才发生。四腿因此从头到尾\n"
+     "都是同一后端，量的是 source→map→keyBy→window 管道。本 fork 已在修正组完成真正的\n"
+     "后端切换与键基数放大，见「键基数扫描」图。"),
 ]
 
 # What the proposal asks for in section 3.3, and whether this box can deliver it.
@@ -750,6 +751,18 @@ def render_stage1(con, out_path, run_note=""):
     drawn = [group for group in STAGE1_GROUPS if any(c in cases for c in group[1])]
     if not drawn:
         return None
+
+    # The spread between the fastest and slowest window assigner is a property of
+    # the data, so it is computed rather than written into the heading; a stale
+    # hard-coded figure there contradicted the bars after the next run.
+    window_values = []
+    for case in STAGE1_GROUPS[0][1]:
+        score = _latest(con, case, "score")
+        if score:
+            window_values.append(score[0])
+    spread = ("%.1f" % (max(window_values) / min(window_values))) if window_values else "—"
+    drawn = [(heading.format(window_spread=spread), wanted, color, warning)
+             for heading, wanted, color, warning in drawn]
 
     fig, axes = plt.subplots(1, len(drawn), figsize=(7.0 * len(drawn), 5.2))
     axes = [axes] if len(drawn) == 1 else list(axes)

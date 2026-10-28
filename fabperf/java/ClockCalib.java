@@ -27,6 +27,15 @@
  * measured so the estimate validates itself - if the latency model is wrong the two disagree,
  * which is reported as {@code spread}.
  *
+ * <p>A dependent-multiply chain was tried as an external control on the 1-cycle assumption and is
+ * unusable: HotSpot C2 eliminates {@code x = x * y} loops outright (measured 0.19 cycles per
+ * iteration, i.e. the loop is gone), and {@code x = x * y + 1} runs at the same rate as the 2-op ALU
+ * chain, which cannot discriminate without this core's multiply latency - and the hypervisor masks
+ * the CPU model as "General Processors", so that latency cannot be looked up. The absolute figure
+ * therefore rests on the standard 1-cycle integer add/xor latency; what this class can prove is
+ * repeatability (two chain lengths agreeing, and stability across runs and load conditions), not
+ * that the latency model is right. On a box with a working PMU, prefer counting cycles.
+ *
  * <p>Prints one machine-readable line.  Run it pinned to the same core as the benchmark:
  * {@code taskset -c 0 java -cp clockcalib ClockCalib 5}.
  */

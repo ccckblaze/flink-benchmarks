@@ -119,6 +119,10 @@ def main():
     ap.add_argument("--core", required=True)
     ap.add_argument("--siblings", default="")
     ap.add_argument("--nproc-total", default="")
+    ap.add_argument("--present", default="",
+                    help="static /sys/devices/system/cpu/present range, unaffected by hotplug")
+    ap.add_argument("--sibling-state", default="",
+                    help="offlined_by_runner | left_online_no_sudo | absent")
     ap.add_argument("--flink-version", default="")
     ap.add_argument("--jar", default="")
     ap.add_argument("--warmup", default="")
@@ -140,6 +144,11 @@ def main():
         "cpu_model": cpu_model(cpuinfo),
         "cpu_arch": lscpu_field("Architecture", lscpu_text),
         "nproc_total": args.nproc_total or sh("nproc"),
+        # `present` is the honest machine size: nproc shrinks when a sibling is
+        # offline, which previously made a run look like it happened on a
+        # smaller box than it did.
+        "cpu_present": args.present,
+        "sibling_state": args.sibling_state,
         "nproc_online": sh("nproc"),
         "core_pinned": args.core,
         "core_siblings": siblings,

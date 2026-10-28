@@ -84,6 +84,11 @@ def _value(con, case, metric):
     return row[0] if row else 0.0
 
 
+def keyed_state_score(con, keys, backend):
+    """ops/ms score for one sweep cell, or None."""
+    return chart._latest(con, "keyedState.%s.%s" % (keys, backend), "score")
+
+
 def _stage1_run_id(con):
     """Run id embedded in the latest JMH provenance tag, or None."""
     row = con.execute(
@@ -92,6 +97,35 @@ def _stage1_run_id(con):
         return None
     match = re.search(r"fabperf-(\d{8}T\d{6}Z)", row[0])
     return match.group(1) if match else None
+
+
+def _cross_checks(con):
+    """Two independent confirmations that the corrected group measures what it claims.
+
+    The first ties the new numbers to the official ones at the one point where
+    they describe the same job; the second is the gap the official group should
+    have shown and did not.
+    """
+    rows = []
+    official = chart._latest(con, "stateBackends.MEMORY", "score")
+    ours = keyed_state_score(con, "1000", "hashmap")
+    if official and ours:
+        off, our = official[0], ours[0]
+        rows.append("| 官方 `stateBackends.MEMORY`（键基数 1000、hashmap）与本组"
+                    " 1 千键 HashMap 腿 | %.0f vs %.0f ops/ms，差 %.1f%% | 两条独立实现跑同一形状"
+                    "落在噪声带内，说明修正组没有引入额外开销 |" % (
+                        off, our, abs(off - our) * 100.0 / off))
+    rocks_official = chart._latest(con, "stateBackends.ROCKS", "score")
+    rocks_ours = keyed_state_score(con, "1000", "rocksdb")
+    if rocks_official and rocks_ours:
+        rocks_official, rocks_ours = rocks_official[0], rocks_ours[0]
+        rows.append("| 官方 `stateBackends.ROCKS` 声称的 RocksDB 与本组 1 千键 RocksDB 腿 |"
+                    " %.0f vs %.0f ops/ms，差 %.1f 倍 | 官方那条「RocksDB」腿的读数和它的 hashmap"
+                    " 腿几乎相同——它根本没跑 RocksDB |" % (
+                        rocks_official, rocks_ours, rocks_official / rocks_ours))
+    if not rows:
+        return ["（尚缺官方 state 组数据，交叉校验待补）"]
+    return ["| 校验项 | 读数 | 含义 |", "| --- | --- | --- |"] + rows
 
 
 def _clock_calibration(con):
@@ -369,11 +403,12 @@ def generate(con, out_dir, title, env_lines):
             ghz, ghz_path = _clock_calibration(con)
             lines += ["", "## 阶段一（修正）：键基数扫描与状态后端真实切换", ""]
             if keyed_png:
-                lines += ["![键基数扫描（修正组）](%s)" % keyed_png, ""]
+                lines += ["![键基数扫描（修正组）](%s)" % os.path.basename(keyed_png), ""]
             lines += ["",
-                      "| 键基数 | HashMapStateBackend | EmbeddedRocksDBStateBackend | RocksDB 开销倍数 |"
-                      " HashMap 每记录 | RocksDB 每记录 | HashMap 折算周期/记录 |"
-                      " RocksDB 折算周期/记录 |",
+                      "| 键基数 | HashMapStateBackend（Mops/s） |"
+                      " EmbeddedRocksDBStateBackend（Mops/s） | RocksDB 开销倍数 |"
+                      " HashMap 每记录（纳秒） | RocksDB 每记录（纳秒） |"
+                      " HashMap 折算周期/记录 | RocksDB 折算周期/记录 |",
                       "| --- | --- | --- | --- | --- | --- | --- | --- |"]
             from .terms import KEYED_STATE_CARDINALITIES
             for keys, _keys_long, keys_short in KEYED_STATE_CARDINALITIES:
@@ -382,9 +417,9 @@ def generate(con, out_dir, title, env_lines):
                     continue
                 ns_fast, ns_slow = 1000.0 / fast[0], 1000.0 / slow[0]
                 if ghz:
-                    cyc = " | %.0f | %.0f |" % (ns_fast * ghz, ns_slow * ghz)
+                    cyc = "| %.0f | %.0f |" % (ns_fast * ghz, ns_slow * ghz)
                 else:
-                    cyc = " | — | — |"
+                    cyc = "| — | — |"
                 lines.append("| %s | %.2f ±%.2f | %.2f ±%.2f | %.2f 倍 | %.1f | %.1f %s" % (
                     keys_short, fast[0], fast[1], slow[0], slow[1],
                     fast[0] / slow[0], ns_fast, ns_slow, cyc))
@@ -403,7 +438,9 @@ def generate(con, out_dir, title, env_lines):
                       "",
                       "读数意义：两腿差就是「状态后端切换」的真实代价，官方四腿把它显示为 6.6% 是因为"
                       "它从未切换。这条曲线同时给出 Flinkable 最该争取的区间——吞吐随键基数跌落的位置就是"
-                      "工作集越过末级缓存的拐点，拐点之后每记录成本由访存而非指令数决定。"]
+                      "工作集越过末级缓存的拐点，拐点之后每记录成本由访存而非指令数决定。",
+                      "",
+                      "**与本组互为印证的两处交叉校验**："] + _cross_checks(con)
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(
         "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()

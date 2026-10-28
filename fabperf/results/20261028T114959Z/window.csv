@@ -1,0 +1,5 @@
+"Benchmark","Mode","Threads","Samples","Score","Score Error (99.9%)","Unit"
+"org.apache.flink.benchmark.WindowBenchmarks.globalWindow","thrpt",1,7,5128.108985,84.517274,"ops/ms"
+"org.apache.flink.benchmark.WindowBenchmarks.sessionWindow","thrpt",1,7,688.203804,27.984709,"ops/ms"
+"org.apache.flink.benchmark.WindowBenchmarks.slidingWindow","thrpt",1,7,615.096584,13.511926,"ops/ms"
+"org.apache.flink.benchmark.WindowBenchmarks.tumblingWindow","thrpt",1,7,3604.102585,91.431465,"ops/ms"

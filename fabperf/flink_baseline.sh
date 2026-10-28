@@ -48,10 +48,42 @@ cd "$REPO_DIR"
 mkdir -p "$OUT_DIR" "$DATA_TMP"
 
 # --- control variables --------------------------------------------------------
+# Expand a sysfs range list ("0-3,5") into one CPU id per line.
+expand_cpus() {
+  local spec=$1 part lo hi c
+  IFS=',' read -ra PARTS <<< "$spec"
+  for part in "${PARTS[@]}"; do
+    if [[ "$part" == *-* ]]; then
+      lo=${part%-*}; hi=${part#*-}
+      for ((c=lo; c<=hi; c++)); do echo "$c"; done
+    else
+      echo "$part"
+    fi
+  done
+}
+
+# Bring every present CPU online before reading anything. A previous run or a
+# manual probe that left a sibling offline shrinks that core's topology file, so
+# this script could no longer tell "this CPU has no sibling" from "its sibling is
+# offline", and would record a degraded machine as if it were the setup.
+PRESENT=$(cat /sys/devices/system/cpu/present 2>/dev/null || echo "")
+SUDO_OK=0
+if sudo -n true 2>/dev/null; then
+  SUDO_OK=1
+  if [[ -n "$PRESENT" ]]; then
+    for c in $(expand_cpus "$PRESENT"); do
+      state_file="/sys/devices/system/cpu/cpu${c}/online"
+      [[ -f "$state_file" && "$(cat "$state_file")" == "0" ]] \
+        && echo 1 | sudo tee "$state_file" >/dev/null 2>&1 || true
+    done
+  fi
+fi
+
 # Captured before the SMT sibling goes offline: once it does, the topology files
 # shrink and the snapshot would describe the degraded machine, not the setup.
 SIBLINGS=$(cat "/sys/devices/system/cpu/cpu${CORE}/topology/thread_siblings_list")
 NPROC_TOTAL=$(nproc)
+NPROC_PRESENT=$(echo "$PRESENT" | tr -d '\n')
 CPUS=()
 IFS=',' read -ra PARTS <<< "$SIBLINGS"
 for part in "${PARTS[@]}"; do
@@ -71,18 +103,25 @@ restore_sibling() {
     echo "smt sibling cpu${SIBLING} back online"
   fi
 }
-if [[ -n "$SIBLING" ]] && sudo -n true 2>/dev/null; then
+if [[ -n "$SIBLING" ]] && [[ "$SUDO_OK" == "1" ]]; then
   echo 0 | sudo tee "/sys/devices/system/cpu/cpu${SIBLING}/online" >/dev/null
   trap restore_sibling EXIT
   echo "smt sibling cpu${SIBLING} offline for the run"
+elif [[ -n "$SIBLING" ]]; then
+  echo "WARNING: SMT sibling cpu${SIBLING} left ONLINE (no passwordless sudo)" >&2
 else
-  echo "WARNING: SMT sibling left online (no passwordless sudo, or core has no sibling)"
+  echo "note: cpu${CORE} reports no SMT sibling at its present topology"
 fi
+SIBLING_STATE="not_applicable"
+[[ -z "$SIBLING" ]] && SIBLING_STATE="absent"
+[[ -n "$SIBLING" && "$SUDO_OK" == "1" ]] && SIBLING_STATE="offlined_by_runner"
+[[ -n "$SIBLING" && "$SUDO_OK" == "0" ]] && SIBLING_STATE="left_online_no_sudo"
 
 snapshot_env() {
   python3 fabperf/env_snapshot.py --out "$OUT_DIR/env.json" --core "$CORE" \
     --flink-version "$FLINK_VERSION" --jar "${JAR:-pending}" \
     --siblings "$SIBLINGS" --nproc-total "$NPROC_TOTAL" \
+    --present "$NPROC_PRESENT" --sibling-state "$SIBLING_STATE" \
     --warmup "$WARMUP" --iterations "$ITERATIONS" --iter-time "$ITER_TIME" \
     --xmx "$XMX" --run-id "$RUN_ID" \
     --note "Stage-1 single-core throughput baseline; groups: $BENCH_GROUPS"
