@@ -124,6 +124,30 @@ def generate(con, out_dir, title, env_lines):
         lines += ["", "口径：仅编解码通道（纳秒/记录），不含值构造项；“改造前/改造后”为同一次运行内"
                       "并列的 A/B 腿，避免跨会话机器状态漂移；“借用零分配解码”为解码不新建字符串的"
                       "下界形态，仅作参照。"]
+    lines += ["", "## 反压行为（消费者停读时引擎吸收与回落）", ""]
+    bp_cases = [("backpressure_engine", "flinkable · 网络 shuffle 通道", "buffers"),
+                ("backpressure_channel", "flinkable · 任务间通道", "records"),
+                ("backpressure_jvm_pool", "原版 Flink · 缓冲池按预算封顶（64 段）", "buffers"),
+                ("backpressure_jvm_reserved", "原版 Flink · 池可容纳全场景（8192 段）", "buffers")]
+    bp_rows = [(label, _value(con, case, "absorbed_mb"), _value(con, case, "refused"),
+                _value(con, case, "residual_mb"), _value(con, case, "rss_retained_mb"),
+                _value(con, case, "drain_ns"), unit)
+               for case, label, unit in bp_cases if _has_case(con, case)]
+    if bp_rows:
+        lines += ["| 通道 | 引擎吸收 | 拒绝写入 | 恢复后队列残留 | 恢复后常驻内存未回落 | 排空耗时 |",
+                  "| --- | --- | --- | --- | --- | --- |"]
+        for label, absorbed, refused, residual, retained, drain_ns, unit in bp_rows:
+            lines.append("| %s | %.0f MB | %d 次 | %.1f MB | %.0f MB | %.0f 纳秒/%s |" % (
+                label, absorbed, refused, residual, retained, drain_ns,
+                "缓冲" if unit == "buffers" else "记录"))
+        lines += ["", "口径：单通道停读 8192 × 32 KiB（Flink 网络缓冲段大小）后，引擎驻留字节、被拒写入"
+                      "次数、恢复排空后队列残留与进程常驻内存增量（`/proc/self/statm`，同进程基线差）。"
+                      "原版一行两态：按预算封顶的池（`LocalBufferPool` 段尽 → `isAvailable()=false` → 生产者被拒 "
+                      "8128 次，驻留仅 2 MB）；把池放到能吞下整个场景时，256 MB 在**构造期**就预留完毕，"
+                      "反压期间不再增长，而回收后 RSS 一分不还（389 MB 全程驻留，期间 GC 仅 2 次）——"
+                      "原版“反压时内存涨”实为**预留**、“不回收”实为**池化**。"
+                      "flinkable 两行的“拒绝写入 0 次”是本引擎尚未实现该信号的如实记录，"
+                      "“恢复后常驻内存未回落”为分配器保留页（非队列数据）的记账。"]
     lines += ["", "## 时间线趋势（同一指标随摄取次序，Codespeed 式核心视图）", ""]
     trend_runs = con.execute(
         "SELECT id, source FROM runs WHERE suite != 'manual' ORDER BY id").fetchall()

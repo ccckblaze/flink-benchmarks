@@ -48,11 +48,11 @@ def _has(con, case):
     return con.execute("SELECT 1 FROM metrics WHERE case_name = ? LIMIT 1", (case,)).fetchone() is not None
 
 
-def _bar_labels(ax, bars, fmt="{:.0f}"):
+def _bar_labels(ax, bars, fmt="{:.0f}", fontsize=9):
     for bar in bars:
         ax.annotate(fmt.format(bar.get_height()),
                     (bar.get_x() + bar.get_width() / 2, bar.get_height()),
-                    ha="center", va="bottom", fontsize=9)
+                    ha="center", va="bottom", fontsize=fontsize)
 
 
 def render(con, out_path, title):
@@ -71,6 +71,8 @@ def render(con, out_path, title):
         panels.append("throughput")
     if _has(con, "serde_shape_cjk10"):
         panels.append("shapes")
+    if all(_has(con, c) for c in ("backpressure_engine", "backpressure_channel")):
+        panels.append("backpressure")
 
     n = len(panels)
     if n == 0:
@@ -188,6 +190,37 @@ def render(con, out_path, title):
             ax.set_title("⑥ 非 ASCII 字符串编解码（与原版同会话并列）", fontsize=10)
             ax.legend(fontsize=7.5, loc="upper right")
             ax.set_ylim(0, max(after + jvm) * 1.42)
+        elif panel == "backpressure":
+            # M147: what each engine does when a consumer stops reading. Two bars per
+            # shape — the bytes held while stalled, and the RSS still missing after the
+            # channel recovered. The refusal count rides as an annotation: Flink's buffer
+            # pool refuses writes once its budget is gone (that refusal *is* backpressure),
+            # so a zero next to a large absorption is the finding, not a rounding error.
+            specs = [("backpressure_engine", "flinkable\n网络 shuffle 通道"),
+                     ("backpressure_channel", "flinkable\n任务间通道"),
+                     ("backpressure_jvm_pool", "原版 Flink\n缓冲池按预算封顶"),
+                     ("backpressure_jvm_reserved", "原版 Flink\n池可容纳全场景")]
+            specs = [(c, g) for c, g in specs if _has(con, c)]
+            cases = [c for c, _g in specs]
+            absorbed = [_latest(con, c, "absorbed_mb")[0] for c in cases]
+            retained = [_latest(con, c, "rss_retained_mb")[0] for c in cases]
+            refused = [_latest(con, c, "refused")[0] for c in cases]
+            x = range(len(cases))
+            b1 = ax.bar([i - w / 2 for i in x], absorbed, w, color=BLUE,
+                        label="反压期间引擎吸收（队列/池驻留）")
+            b2 = ax.bar([i + w / 2 for i in x], retained, w, color=GRAY,
+                        label="恢复排空后常驻内存增量（未回落）")
+            _bar_labels(ax, list(b1) + list(b2), "{:.0f}", fontsize=7.5)
+            for i in x:
+                ax.annotate("拒绝写入 %d 次" % refused[i], (i, max(absorbed[i], retained[i]) * 1.1),
+                            ha="center", fontsize=7.5, color="#a33" if refused[i] == 0 else BLUE,
+                            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85))
+            ax.set_xticks(list(x), [g for _c, g in specs])
+            ax.tick_params(axis="x", labelsize=7.5)
+            ax.set_ylabel("内存（MB，越低越好）")
+            ax.set_title("⑦ 反压行为（下游停读 8192 × 32 KiB 网络缓冲）", fontsize=10)
+            ax.legend(fontsize=7, loc="upper left")
+            ax.set_ylim(0, max(absorbed + retained) * 1.36)
         elif panel == "memory":
             if _has(con, "memory_jm_rss"):
                 # M131: the standardized distributed deployment — one JobManager plus one
@@ -385,7 +418,22 @@ def _trend_series(con):
             series.append((label, color, marker, style, values))
     if not series:
         return None
-    return runs, series
+    # Only runs that actually carry a point belong on the axis, and a milestone
+    # ingested in two passes (the M147 backpressure session is one) must not
+    # repeat its label — suffix the duplicates so the axis stays readable.
+    used = {rid for (_label, _color, _marker, _style, values) in series for rid in values}
+    runs = [(rid, src) for (rid, src) in runs if rid in used]
+    total = {}
+    for _rid, src in runs:
+        total[src] = total.get(src, 0) + 1
+    seen, labelled = {}, []
+    for rid, src in runs:
+        if total[src] == 1:
+            labelled.append((rid, src))
+            continue
+        seen[src] = seen.get(src, 0) + 1
+        labelled.append((rid, "%s\u00b7%s" % (src, chr(ord("a") + seen[src] - 1))))
+    return labelled, series
 
 
 def _draw_trend(fig, gs, row, trend):
