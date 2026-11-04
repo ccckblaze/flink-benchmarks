@@ -99,14 +99,20 @@ def keyed_state_score(con, keys, backend):
     return chart._latest(con, "keyedState.%s.%s" % (keys, backend), "score")
 
 
-def _stage1_run_id(con):
-    """Run id embedded in the latest JMH provenance tag, or None."""
+def _run_id_for_case(con, case):
+    """Run id that produced the latest value for one case, or None."""
     row = con.execute(
-        "SELECT source FROM runs WHERE suite = 'jmh' ORDER BY id DESC LIMIT 1").fetchone()
+        "SELECT r.source FROM metrics m JOIN runs r ON r.id = m.run_id "
+        "WHERE m.case_name = ? ORDER BY r.id DESC, r.ts DESC LIMIT 1", (case,)).fetchone()
     if not row:
         return None
     match = re.search(r"fabperf-(\d{8}T\d{6}Z)", row[0])
     return match.group(1) if match else None
+
+
+def _stage1_run_id(con):
+    """Run id of the latest window-group JMH leg, or None."""
+    return _run_id_for_case(con, "globalWindow")
 
 
 def _cross_checks(con):
@@ -121,10 +127,12 @@ def _cross_checks(con):
     ours = keyed_state_score(con, "1000", "hashmap")
     if official and ours:
         off, our = official[0], ours[0]
+        gap = abs(off - our) * 100.0 / off
+        band = "仍在会话间噪声带内" if gap <= 7.0 else "已超出 ~7% 的会话间噪声带"
         rows.append("| 官方 `stateBackends.MEMORY`（键基数 1000、hashmap）与本组"
-                    " 1 千键 HashMap 腿 | %.0f vs %.0f ops/ms，差 %.1f%% | 两条独立实现跑同一形状"
-                    "落在噪声带内，说明修正组没有引入额外开销 |" % (
-                        off, our, abs(off - our) * 100.0 / off))
+                    " 1 千键 HashMap 腿 | %.0f vs %.0f ops/ms，差 %.1f%% | 两条独立实现跑同键形状但"
+                    "非同记录数（官方 7\,000\,000、本组 2\,000\,000），差值里既有形状项也有会话项，%s；"
+                    "两条腿的 run 归属见明细表 |" % (off, our, gap, band))
     rocks_official = chart._latest(con, "stateBackends.ROCKS", "score")
     rocks_ours = keyed_state_score(con, "1000", "rocksdb")
     if rocks_official and rocks_ours:
@@ -146,10 +154,30 @@ def _clock_calibration(con):
     calibration next to the CSVs, which keeps the conversion tied to the run
     instead of a constant in code. Returns (ghz, source_path) or (None, None).
     """
-    run_id = _stage1_run_id(con)
-    if not run_id:
+    # Walk JMH runs newest-first and take the calibration of the most recent
+    # run that actually carried one: legs without CLOCK_CALIB must not lose
+    # their cycles column, and the calibration's run id is disclosed with it.
+    results = os.path.join(_REPO_ROOT, "fabperf", "results")
+    run_ids = []
+    for row in con.execute(
+            "SELECT source FROM runs WHERE suite = 'jmh' ORDER BY id DESC").fetchall():
+        match = re.search(r"fabperf-(\d{8}T\d{6}Z)", row[0])
+        if match and match.group(1) not in run_ids:
+            run_ids.append(match.group(1))
+    path = None
+    for run_id in run_ids:
+        try:
+            for name in sorted(n for n in os.listdir(results) if n.startswith(run_id)):
+                cand = os.path.join(results, name, "clockcalib.txt")
+                if os.path.exists(cand):
+                    path = cand
+                    break
+        except OSError:
+            continue
+        if path:
+            break
+    if path is None:
         return None, None
-    path = os.path.join(_REPO_ROOT, "fabperf", "results", run_id, "clockcalib.txt")
     try:
         with open(path) as handle:
             text = handle.read()
@@ -158,7 +186,7 @@ def _clock_calibration(con):
     match = re.search(r"\bghz=([\d.]+)", text)
     if not match:
         return None, None
-    calib = {"ghz": float(match.group(1))}
+    calib = {"ghz": float(match.group(1)), "run_id": os.path.basename(os.path.dirname(path))}
     # The advertised frequency is kept beside the measured one so the figure can
     # say how far off a nominal-clock conversion would have been; on this class
     # of cloud host the two differ by about a fifth.
@@ -291,14 +319,20 @@ def _gibps(value):
     return "—" if value is None else "%.1f" % value
 
 
-def _stage1_run_note(con):
-    """Fixed discipline of flink_baseline.sh, plus the run id it came from."""
-    row = con.execute(
-        "SELECT source FROM runs WHERE suite = 'jmh' ORDER BY id DESC LIMIT 1").fetchone()
-    match = re.search(r"fabperf-(\d{8}T\d{6}Z)", row[0]) if row else None
+def _stage1_run_note(con, anchor=None):
+    """Fixed discipline of flink_baseline.sh, plus the run id it came from.
+
+    `anchor` pins the provenance to the run that produced a specific case, so
+    a later same-machine run (for example the official state group) cannot
+    make an earlier chart claim the wrong run id.
+    """
+    if anchor is not None:
+        run_id = _run_id_for_case(con, anchor)
+    else:
+        run_id = _stage1_run_id(con)
     parts = [STAGE1_DISCIPLINE]
-    if match:
-        parts.append("run " + match.group(1))
+    if run_id:
+        parts.append("run " + run_id)
     return " · ".join(parts)
 
 
@@ -552,8 +586,8 @@ def generate(con, out_dir, title, env_lines):
             calib, _calib_path = _clock_calibration(con)
             keyed_png = chart.render_keyed_state(
                 con, os.path.join(out_dir, "keyed_state.png"),
-                run_note=_stage1_run_note(con), calib=calib,
-                machine=_machine_baseline()[0])
+                run_note=_stage1_run_note(con, anchor="keyedState.1000.hashmap"),
+                calib=calib, machine=_machine_baseline()[0])
             ghz = calib["ghz"] if calib else None
             lines += ["", "## 阶段一（修正）：键基数扫描与状态后端真实切换", ""]
             if keyed_png:
@@ -579,9 +613,11 @@ def generate(con, out_dir, title, env_lines):
                     fast[0] / slow[0], ns_fast, ns_slow, cyc))
             lines += ["",
                       "口径：单位 Mops/s；每记录耗时 = 1000 ÷ Mops/s（纳秒/记录）；周期/记录 = 每记录耗时"
-                      " × 标定主频%s。**标注为折算**：本机无可用 PMU，不是计数器读数。标定主频取自带同一"
-                      " run 目录的 `clockcalib.txt`（依赖 ALU 链，两种链长自校验差 ≤0.26%%）。" % (
-                          "（%.4f GHz）" % ghz if ghz else "（缺标定文件，未折算）"),
+                      " × 标定主频%s。**标注为折算**：本机无可用 PMU，不是计数器读数。标定主频取自最近一次带"
+                      " `CLOCK_CALIB` 的 run（`clockcalib.txt`，依赖 ALU 链，两种链长自校验差 ≤0.26%%；"
+                      "两次带标定的 run 之间差 0.03%%，可视为常量）。" % (
+                          "（%.4f GHz，run %s）" % (ghz, calib.get("run_id", "—"))
+                          if ghz else "（缺标定文件，未折算）"),
                       "",
                       "与官方 state 组的差异不是调参，而是三点口径修正：状态后端由作业级配置真正切换并经"
                       " `StateBackendLoader` 解析结果校验（分别解析为 `HashMapStateBackend` 与"

@@ -900,7 +900,10 @@ def _keyed_calib_note(calib):
         low = int(round((1.0 - nominal / (ghz * 1000.0)) * 100))
         text += ("机器标称 %.0f MHz 只是 hypervisor 公布值、并非实跑频率，用它换算会偏低约 %d%%。"
                  % (nominal, low))
-    text += "四次独立标定极差 0.7%（可重复性约 ±1%）；IPC 仍【未测】——它需要指令计数。"
+    src = calib.get("run_id")
+    if src:
+        text += "标定取自 run %s。" % src
+    text += "多次独立标定极差 ≤0.7%（可重复性约 ±1%）；IPC 仍【未测】——它需要指令计数。"
     return text
 
 

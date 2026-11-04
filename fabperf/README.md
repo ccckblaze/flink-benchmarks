@@ -11,6 +11,11 @@ Flinkable 侧后续以同一批用例、同一台机器、同一套控制变量�
 - `env_snapshot.py` — 控制变量快照（CPU 型号、绑核、governor、THP、分配器、内核参数、内存、负载、JMH 参数）
 - `summarize.py` — 把一次 run 目录整理成 `baseline.md`（环境表 + 分组结果表）
 - `java/ClockCalib.java` — 有效主频标定（无 PMU 时折算周期/记录用），随每次 run 自动执行
+- `machine_baseline.sh` + `c/machine_probe.c` — 测量机画像与基线 I/O 采集（本机无 fio/sysbench，
+  全部用 dd 与自包含 C 探针）：磁盘顺序写按 `conv=fdatasync` 落盘口径、O_DIRECT 不落盘接受速率
+  仅作对照并如实标注；O_DIRECT 读被 virtio 拒绝时回退为 drop_caches 后缓冲读；4 KiB 随机读、
+  fsync 分位延迟、单线程/全线程内存带宽。输出 `machine_baseline.json`，报告自动取最近一次
+- `env_snapshot.py` 同步采集缓存层级、虚拟化、块设备、文件系统、网卡进每次 run 的 `env.json`
 
 ## 用例组
 
