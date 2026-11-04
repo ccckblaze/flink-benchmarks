@@ -1,0 +1,9 @@
+"Benchmark","Mode","Threads","Samples","Score","Score Error (99.9%)","Unit","Param: numberOfKeys","Param: stateBackend"
+"org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState","thrpt",1,7,3696.960410,169.734343,"ops/ms",1,hashmap
+"org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState","thrpt",1,7,494.467313,14.974935,"ops/ms",1,rocksdb
+"org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState","thrpt",1,7,3333.891973,54.222730,"ops/ms",1000,hashmap
+"org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState","thrpt",1,7,284.332009,10.706780,"ops/ms",1000,rocksdb
+"org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState","thrpt",1,7,1113.113356,40.658747,"ops/ms",100000,hashmap
+"org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState","thrpt",1,7,148.916770,3.106019,"ops/ms",100000,rocksdb
+"org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState","thrpt",1,7,515.427265,22.539547,"ops/ms",1000000,hashmap
+"org.apache.flink.benchmark.KeyedStateCardinalityBenchmark.keyedState","thrpt",1,7,75.019848,0.986429,"ops/ms",1000000,rocksdb
